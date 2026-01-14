@@ -1,0 +1,25 @@
+/*
+ * Copyright (c) 2026 Analog Devices Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+&i2c1 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+
+	ltc4286@40 {
+		compatible = "adi,ltc4286";
+		reg = <0x40>;
+
+		reboot-gpios = <&gpiob 10 GPIO_ACTIVE_HIGH>;
+		op-status-gpios = <&gpiob 11 GPIO_ACTIVE_HIGH>;
+		oc-status-gpios = <&gpiob 12 GPIO_ACTIVE_HIGH>;
+		comp-out-gpios = <&gpiob 13 GPIO_ACTIVE_HIGH>;
+		fault-out-gpios = <&gpiob 14 GPIO_ACTIVE_HIGH>;
+		power-good-gpios = <&gpiob 15 GPIO_ACTIVE_HIGH>;
+		alert-gpios = <&gpiob 16 GPIO_ACTIVE_HIGH>;
+
+		write-protect-enable;
+	};
+};
