@@ -1526,6 +1526,18 @@ test_i2c_ism6hg256x: ism6hg256x@c8 {
 	gyro-odr = <LSM6DSVXXX_DT_ODR_AT_60Hz>;
 };
 
+test_i2c_ltc4286: ltc4286@c1 {
+	compatible = "adi,ltc4286";
+	reg = <0xc1>;
+	reboot-gpios = <&test_gpio 0 0>;
+	op-status-gpios = <&test_gpio 0 0>;
+	oc-status-gpios = <&test_gpio 0 0>;
+	comp-out-gpios = <&test_gpio 0 0>;
+	fault-out-gpios = <&test_gpio 0 0>;
+	power-good-gpios = <&test_gpio 0 0>;
+	alert-gpios = <&test_gpio 0 0>;
+};
+
 test_i2c_ltr553: ltr553@c9 {
 	compatible = "liteon,ltr553";
 	reg = <0xc9>;
