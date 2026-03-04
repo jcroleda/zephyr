@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Analog Devices Inc.
+ * Copyright (c) 2026 Analog Devices Inc.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -20,11 +20,12 @@
 LOG_MODULE_REGISTER(ADT7420, CONFIG_SENSOR_LOG_LEVEL);
 
 static int adt7420_temp_reg_read(const struct device *dev, uint8_t reg,
-				 int16_t *val)
+				 uint16_t *val)
 {
 	const struct adt7420_dev_config *cfg = dev->config;
+	uint8_t *val_ptr = (uint8_t *)val;
 
-	if (i2c_burst_read_dt(&cfg->i2c, reg, (uint8_t *) val, 2) < 0) {
+	if (i2c_write_read_dt(&cfg->i2c, &reg, 1, val_ptr, 2) < 0) {
 		return -EIO;
 	}
 
@@ -37,9 +38,9 @@ static int adt7420_temp_reg_write(const struct device *dev, uint8_t reg,
 				  int16_t val)
 {
 	const struct adt7420_dev_config *cfg = dev->config;
-	uint8_t buf[3] = {reg, val >> 8, val & 0xFF};
+	uint8_t payload[3] = {reg, (val & 0xFF), ((val >> 8) & 0xFF)};
 
-	return i2c_write_dt(&cfg->i2c, buf, sizeof(buf));
+	return i2c_write_dt(&cfg->i2c, payload, ARRAY_SIZE(payload));
 }
 
 static int adt7420_attr_set(const struct device *dev,
@@ -48,35 +49,31 @@ static int adt7420_attr_set(const struct device *dev,
 			    const struct sensor_value *val)
 {
 	const struct adt7420_dev_config *cfg = dev->config;
-	uint8_t val8, reg = 0U;
-	uint16_t rate;
+	struct adt7420_data *dev_data = dev->data;
+	uint8_t reg = 0U;
 	int64_t value;
+	int16_t payload;
+	int ret;
 
-	if (chan != SENSOR_CHAN_AMBIENT_TEMP) {
+	if (chan != SENSOR_CHAN_ALL && chan != SENSOR_CHAN_AMBIENT_TEMP) {
+		LOG_DBG("Invalid channel");
 		return -ENOTSUP;
 	}
 
 	switch (attr) {
 	case SENSOR_ATTR_SAMPLING_FREQUENCY:
-		rate = val->val1 * 1000 + val->val2 / 1000; /* rate in mHz */
-
-		switch (rate) {
-		case 240:
-			val8 = ADT7420_OP_MODE_CONT_CONV;
-			break;
-		case 1000:
-			val8 = ADT7420_OP_MODE_1_SPS;
-			break;
-		default:
+		if (val->val1 < 0 || val->val1 > 3) {
+			LOG_DBG("Invalid operation mode!");
 			return -EINVAL;
 		}
 
-		if (i2c_reg_update_byte_dt(&cfg->i2c,
-					   ADT7420_REG_CONFIG,
-					   ADT7420_CONFIG_OP_MODE(~0),
-					   ADT7420_CONFIG_OP_MODE(val8)) < 0) {
-			LOG_DBG("Failed to set attribute!");
-			return -EIO;
+		reg = ADT7420_REG_CONFIG;
+		ret = i2c_reg_update_byte_dt(&cfg->i2c, reg,
+			ADT7420_CONFIG_OP_MODE_MASK,
+			ADT7420_CONFIG_OP_MODE(val->val1));
+		if (ret < 0) {
+			LOG_DBG("Failed to set operation mode!");
+			return ret;
 		}
 
 		return 0;
@@ -91,16 +88,215 @@ static int adt7420_attr_set(const struct device *dev,
 		if ((val->val1 > 150) || (val->val1 < -40)) {
 			return -EINVAL;
 		}
+		value = ((int64_t) val->val1 * ADT7420_SCALE_UVAL_TO_VAL + val->val2) *
+			ADT7420_TEMP_CONV_16BIT_DIV;
+		if (value < 0) {
+			value = value + (ADT7420_TEMP_NEG_16BIT *
+				ADT7420_SCALE_UVAL_TO_VAL);
+		}
 
-		value = (int64_t)val->val1 * 1000000 + val->val2;
-		value = (value / ADT7420_TEMP_SCALE) << 1;
+		payload = (int16_t)(value / ADT7420_SCALE_UVAL_TO_VAL);
 
-		if (adt7420_temp_reg_write(dev, reg, value) < 0) {
-			LOG_DBG("Failed to set attribute!");
-			return -EIO;
+		ret = adt7420_temp_reg_write(dev, reg, payload);
+		if (ret < 0) {
+			LOG_DBG("Failed to set threshold!");
+			return ret;
 		}
 
 		return 0;
+
+	case SENSOR_ATTR_HYSTERESIS:
+		if (val->val1 < 0 || val->val1 > 15) {
+			LOG_DBG("Invalid Hysteresis Value!");
+			return -EINVAL;
+		}
+		reg = ADT7420_REG_HIST;
+
+		ret = i2c_reg_write_byte_dt(&cfg->i2c, reg, (uint8_t) val->val1);
+		if (ret < 0) {
+			LOG_DBG("Failed to set hysteresis!");
+			return ret;
+		}
+
+		return 0;
+
+	/* Reset or Shutdown Device*/
+	case SENSOR_ATTR_CONFIGURATION:
+		reg = ADT7420_REG_RESET;
+
+		ret = i2c_reg_write_byte_dt(&cfg->i2c, reg,
+			(val->val1 > 0) ? ADT7420_REG_RESET : 0);
+		if (ret < 0) {
+			LOG_DBG("Failed to  device!");
+			return ret;
+		}
+
+		/* wait 200us as stated on datasheet, page 19 */
+		k_usleep(200);
+
+		/* re-initialize configs */
+		return adt7420_probe(dev);
+
+	/* Fault Queue enabling */
+	case SENSOR_ATTR_FEATURE_MASK:
+		if (val->val1 < 0 || val->val1 > 3) {
+			LOG_DBG("Invalid configuration for Fault Queue!");
+			return -EINVAL;
+		}
+
+		reg = ADT7420_REG_CONFIG;
+
+		ret = i2c_reg_update_byte_dt(&cfg->i2c, reg,
+			ADT7420_CONFIG_FAULT_QUEUE(~0),
+			ADT7420_CONFIG_FAULT_QUEUE(val->val1));
+		if (ret < 0) {
+			LOG_DBG("Failed to set fault queue count!");
+			return ret;
+		}
+
+		return 0;
+
+	/* 16-bit or 13-bit*/
+	case SENSOR_ATTR_RESOLUTION:
+		if (val->val1 < 0 || val->val1 > 1) {
+			LOG_DBG("Invalid Resolution!");
+			return -EINVAL;
+		}
+		reg = ADT7420_REG_CONFIG;
+
+		ret = i2c_reg_update_byte_dt(&cfg->i2c, reg,
+			ADT7420_CONFIG_RESOLUTION,
+			FIELD_PREP(ADT7420_CONFIG_RESOLUTION, val->val1));
+		if (ret < 0) {
+			LOG_DBG("Failed to set resolution!");
+			return ret;
+		}
+
+		dev_data->resolution_16_bit = !!val->val1;
+
+		return 0;
+
+	default:
+		return -ENOTSUP;
+	}
+
+	return 0;
+}
+
+static int adt7420_attr_get(const struct device *dev,
+			    enum sensor_channel chan,
+			    enum sensor_attribute attr,
+			    struct sensor_value *val)
+{
+	const struct adt7420_dev_config *cfg = dev->config;
+	int64_t value;
+	uint16_t uval16;
+	uint8_t uval8, reg = 0U;
+	int ret;
+
+	if (val == NULL) {
+		LOG_DBG("sensor value is null!");
+		return -EINVAL;
+	}
+
+	if (chan != SENSOR_CHAN_ALL && chan != SENSOR_CHAN_AMBIENT_TEMP) {
+		LOG_DBG("Invalid channel");
+		return -ENOTSUP;
+	}
+
+	switch (attr) {
+	case SENSOR_ATTR_SAMPLING_FREQUENCY:
+		reg = ADT7420_REG_CONFIG;
+		ret = i2c_reg_read_byte_dt(&cfg->i2c, reg, &uval8);
+		if (ret < 0) {
+			LOG_DBG("Failed to get sampling mode!");
+			return ret;
+		}
+
+		val->val1 = (ADT7420_CONFIG_OP_MODE_MASK & uval8) >> 5;
+		val->val2 = 0;
+
+		return 0;
+
+	case SENSOR_ATTR_UPPER_THRESH:
+		reg = ADT7420_REG_T_HIGH_MSB;
+		__fallthrough;
+	case SENSOR_ATTR_LOWER_THRESH:
+		if (!reg) {
+			reg = ADT7420_REG_T_LOW_MSB;
+		}
+
+		ret = adt7420_temp_reg_read(dev, reg, &uval16);
+		if (ret < 0) {
+			LOG_DBG("Failed to get attribute!");
+			return ret;
+		}
+
+		value = (int64_t)uval16 * ADT7420_SCALE_UVAL_TO_VAL;
+		if (uval16 & ADT7420_TEMP_SIGN_16BIT) {
+			value = (value - ADT7420_TEMP_NEG_16BIT) /
+				ADT7420_TEMP_CONV_16BIT_DIV;
+		} else {
+			value = value / ADT7420_TEMP_CONV_16BIT_DIV;
+		}
+
+		val->val1 = value / ADT7420_SCALE_UVAL_TO_VAL;
+		val->val2 = value % ADT7420_SCALE_UVAL_TO_VAL;
+
+		return 0;
+
+	case SENSOR_ATTR_CONFIGURATION:
+		reg = ADT7420_REG_CONFIG;
+		ret = i2c_reg_read_byte_dt(&cfg->i2c, reg, &uval8);
+		if (ret < 0) {
+			LOG_DBG("Failed to get configuration!");
+			return ret;
+		}
+
+		val->val1 = uval8;
+		val->val2 = 0;
+
+		return 0;
+
+	case SENSOR_ATTR_HYSTERESIS:
+		reg = ADT7420_REG_HIST;
+		ret = i2c_reg_read_byte_dt(&cfg->i2c, reg, &uval8);
+		if (ret < 0) {
+			LOG_DBG("Failed to get hysteresis!");
+			return ret;
+		}
+
+		val->val1 = uval8;
+		val->val2 = 0;
+
+		return 0;
+
+	case SENSOR_ATTR_RESOLUTION:
+		reg = ADT7420_REG_CONFIG;
+		ret = i2c_reg_read_byte_dt(&cfg->i2c, reg, &uval8);
+		if (ret < 0) {
+			LOG_DBG("Failed to get resolution!");
+			return ret;
+		}
+
+		val->val1 = (ADT7420_CONFIG_RESOLUTION & uval8) ? 13 : 16;
+		val->val2 = 0;
+
+		return 0;
+
+	case SENSOR_ATTR_ALERT:
+		reg = ADT7420_REG_STATUS;
+		ret = i2c_reg_read_byte_dt(&cfg->i2c, reg, &uval8);
+		if (ret < 0) {
+			LOG_DBG("Failed to get alerts!");
+			return ret;
+		}
+
+		val->val1 = uval8;
+		val->val2 = 0;
+
+		return 0;
+
 	default:
 		return -ENOTSUP;
 	}
@@ -121,7 +317,7 @@ static int adt7420_sample_fetch(const struct device *dev,
 		return -EIO;
 	}
 
-	drv_data->sample = value >> 1; /* use 15-bit only */
+	drv_data->sample = value;
 
 	return 0;
 }
@@ -131,21 +327,42 @@ static int adt7420_channel_get(const struct device *dev,
 			       struct sensor_value *val)
 {
 	struct adt7420_data *drv_data = dev->data;
-	int32_t value;
+	int64_t value;
 
 	if (chan != SENSOR_CHAN_AMBIENT_TEMP) {
 		return -ENOTSUP;
 	}
 
-	value = (int32_t)drv_data->sample * ADT7420_TEMP_SCALE;
-	val->val1 = value / 1000000;
-	val->val2 = value % 1000000;
+	if (drv_data->resolution_16_bit) {
+		if (drv_data->sample & ADT7420_TEMP_SIGN_16BIT) {
+			value = (int64_t)drv_data->sample * ADT7420_SCALE_UVAL_TO_VAL;
+			value = (value - ADT7420_TEMP_NEG_16BIT) /
+				ADT7420_TEMP_CONV_16BIT_DIV;
+		} else {
+			value = (int64_t)drv_data->sample * ADT7420_SCALE_UVAL_TO_VAL /
+				ADT7420_TEMP_CONV_16BIT_DIV;
+		}
+	} else {
+		if (drv_data->sample & ADT7420_TEMP_SIGN_13BIT) {
+			value = (int64_t)(drv_data->sample >> 3) *
+				ADT7420_SCALE_UVAL_TO_VAL;
+			value = (value - ADT7420_TEMP_NEG_13BIT) /
+				ADT7420_TEMP_CONV_13BIT_DIV;
+		} else {
+			value = (int64_t)(drv_data->sample >> 3) * ADT7420_SCALE_UVAL_TO_VAL /
+				ADT7420_TEMP_CONV_13BIT_DIV;
+		}
+	}
+
+	val->val1 = value / ADT7420_SCALE_UVAL_TO_VAL;
+	val->val2 = value % ADT7420_SCALE_UVAL_TO_VAL;
 
 	return 0;
 }
 
 static DEVICE_API(sensor, adt7420_driver_api) = {
 	.attr_set = adt7420_attr_set,
+	.attr_get = adt7420_attr_get,
 	.sample_fetch = adt7420_sample_fetch,
 	.channel_get = adt7420_channel_get,
 #ifdef CONFIG_ADT7420_TRIGGER
@@ -156,6 +373,8 @@ static DEVICE_API(sensor, adt7420_driver_api) = {
 static int adt7420_probe(const struct device *dev)
 {
 	const struct adt7420_dev_config *cfg = dev->config;
+	struct adt7420_data *drv_data = dev->data;
+	int64_t temp_crit;
 	uint8_t value;
 	int ret;
 
@@ -168,9 +387,13 @@ static int adt7420_probe(const struct device *dev)
 		return -ENODEV;
 	}
 
-	ret = i2c_reg_write_byte_dt(&cfg->i2c,
-			ADT7420_REG_CONFIG, ADT7420_CONFIG_RESOLUTION |
-			ADT7420_CONFIG_OP_MODE(ADT7420_OP_MODE_CONT_CONV));
+	value = FIELD_PREP(ADT7420_CONFIG_CT_POL, cfg->ct_pol) |
+		FIELD_PREP(ADT7420_CONFIG_INT_POL, cfg->int_pol) |
+		FIELD_PREP(ADT7420_CONFIG_INT_CT_MODE, cfg->ct_mode) |
+		ADT7420_CONFIG_OP_MODE(cfg->init_op_mode) |
+		FIELD_PREP(ADT7420_CONFIG_RESOLUTION, drv_data->resolution_16_bit);
+
+	ret = i2c_reg_write_byte_dt(&cfg->i2c, ADT7420_REG_CONFIG, value);
 	if (ret) {
 		return ret;
 	}
@@ -180,21 +403,29 @@ static int adt7420_probe(const struct device *dev)
 	if (ret) {
 		return ret;
 	}
+
+	temp_crit = CONFIG_ADT7420_TEMP_CRIT * ADT7420_TEMP_CONV_16BIT_DIV;
+	if (temp_crit < 0) {
+		temp_crit = temp_crit + ADT7420_TEMP_NEG_16BIT;
+	}
+
 	ret = adt7420_temp_reg_write(dev, ADT7420_REG_T_CRIT_MSB,
-				     (CONFIG_ADT7420_TEMP_CRIT * 1000000 /
-				     ADT7420_TEMP_SCALE) << 1);
+				    (int16_t) temp_crit);
 	if (ret) {
 		return ret;
 	}
 
 #ifdef CONFIG_ADT7420_TRIGGER
-	if (cfg->int_gpio.port) {
-		ret = adt7420_init_interrupt(dev);
-		if (ret < 0) {
-			LOG_ERR("Failed to initialize interrupt!");
-			return ret;
-		}
+	if (cfg->int_gpio.port && cfg->ct_gpio.port) {
+		LOG_ERR("No GPIO pins to initialize!");
+		return -ENODEV;
 	}
+	ret = adt7420_init_interrupt(dev);
+	if (ret < 0) {
+		LOG_ERR("Failed to initialize interrupt!");
+		return ret;
+	}
+
 #endif
 
 	return 0;
@@ -213,13 +444,20 @@ static int adt7420_init(const struct device *dev)
 }
 
 #define ADT7420_DEFINE(inst)								\
-	static struct adt7420_data adt7420_data_##inst;					\
+	static struct adt7420_data adt7420_data_##inst = {				\
+		.resolution_16_bit = DT_INST_ENUM_IDX(inst, set_resolution),		\
+	};										\
 											\
 	static const struct adt7420_dev_config adt7420_config_##inst = {		\
 		.i2c = I2C_DT_SPEC_INST_GET(inst),					\
+		.int_pol = DT_INST_PROP(inst, int_polarity_active_high),		\
+		.ct_pol = DT_INST_PROP(inst, ct_polarity_active_high),			\
+		.ct_mode = DT_INST_PROP(inst, set_comparator_mode),			\
+		.init_op_mode = DT_INST_ENUM_IDX(inst, op_mode),			\
 											\
 	IF_ENABLED(CONFIG_ADT7420_TRIGGER,						\
-		   (.int_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, int_gpios, { 0 }),))	\
+		   (.int_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, int_gpios, { 0 }),	\
+		    .ct_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, ct_gpios, { 0 }),))	\
 	};										\
 											\
 	SENSOR_DEVICE_DT_INST_DEFINE(inst, adt7420_init, NULL, &adt7420_data_##inst,	\
