@@ -185,7 +185,7 @@ manifest:
       groups:
         - hal
     - name: hal_infineon
-      revision: 470f874ce432763a2b82cd322d0ff6efc89240cd
+      revision: 839de193c8c555a75ce44c3d6085fae9227caa85
       path: modules/hal/infineon
       groups:
         - hal
@@ -231,7 +231,7 @@ manifest:
         - hal
     - name: hal_renesas
       path: modules/hal/renesas
-      revision: cb3db9529c52e80ccc3858df971089165510ce13
+      revision: ca896d22f176a5cea60d826d7d4ad75a14a7e401
       groups:
         - hal
     - name: hal_rpi_pico
@@ -255,7 +255,7 @@ manifest:
       groups:
         - hal
     - name: hal_stm32
-      revision: ab7ea34c77fa1de0789a04740aa4e719cb3b0ad5
+      revision: 57803da28e985e1cbc32a7ea993578f7267d0935
       path: modules/hal/stm32
       groups:
         - hal
@@ -386,7 +386,7 @@ manifest:
       groups:
         - tee
     - name: trusted-firmware-m
-      revision: 3ddfef0edd4fe5672cd63afbe3538509568170df
+      revision: 7e8bf231496cc4d43b2fab0bc133425b47756065
       path: modules/tee/tf-m/trusted-firmware-m
       groups:
         - tee

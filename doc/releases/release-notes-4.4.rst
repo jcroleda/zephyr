@@ -163,11 +163,18 @@ New APIs and options
     * :c:func:`bt_bap_ep_get_conn`
     * :c:member:`bt_ccp_call_control_client_cb.user_data`
     * :kconfig:option:`CONFIG_BT_TBS_MAX_FRIENDLY_NAME_LENGTH`
+    * :c:member:`bt_cap_handover_cb.unicast_to_broadcast_created`
 
   * Host
 
     * :c:func:`bt_gatt_cb_unregister` Added an API to unregister GATT callback handlers.
     * :c:func:`bt_le_per_adv_sync_cb_unregister`
+
+  * ISO
+
+    * :c:member:`bt_iso_chan_ops.disconnected` will now always be called before
+      :c:member:`bt_conn_cb.disconnected` for unicast (CIS) channels,
+      to provide a more deterministic order of callback events. (:github:`104695`).
 
   * Mesh
 
@@ -401,6 +408,19 @@ DeviceTree
 
 * :c:macro:`DT_CHILD_BY_UNIT_ADDR_INT`
 * :c:macro:`DT_INST_CHILD_BY_UNIT_ADDR_INT`
+
+Kernel
+******
+
+* :ref:`cleanup_api`
+
+  * :c:macro:`SCOPE_VAR_DEFINE`
+  * :c:macro:`SCOPE_GUARD_DEFINE`
+  * :c:macro:`SCOPE_DEFER_DEFINE`
+  * :c:macro:`scope_var`
+  * :c:macro:`scope_var_init`
+  * :c:macro:`scope_guard`
+  * :c:macro:`scope_defer`
 
 Libraries / Subsystems
 **********************
