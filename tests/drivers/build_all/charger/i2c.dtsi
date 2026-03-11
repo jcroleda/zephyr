@@ -84,3 +84,17 @@ axp2101@7 {
 		charge-term-current-microamp = <100000>;
 	};
 };
+
+adp5360@8 {
+	compatible = "adi,adp5360";
+	reg = <0x8>;
+
+	charger {
+		compatible = "adi,adp5360-charger";
+		battery-name = "dummy-charger";
+		device-chemistry = "lithium-ion";
+		constant-charge-current-max-microamp = <20000>;
+		constant-charge-voltage-max-microvolt = <4160000>;
+		charge-term-current-microamp = <5000>;
+	};
+};
