@@ -1,0 +1,163 @@
+# Copyright (c) 2026 Analog Devices Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Analog Devices ADP5360 fuel gauge
+
+  The ADP5360 is a multi-function power management IC (PMIC)
+  that includes a battery charger, regulator, and fuel gauge.
+  This binding describes the fuel gauge function.
+
+  The fuel gauge provides battery monitoring including:
+    - State of charge (SOC)
+    - Battery voltage
+    - Charge cycle accumulation
+    - Programmable SOC voltage table
+
+  The fuel gauge is modeled in DT as a child device of "adi,adp5360" compatible node.
+
+compatible: "adi,adp5360-fuel-gauge"
+
+include:
+  - base.yaml
+  - fuel-gauge.yaml
+
+properties:
+  v-soc-0:
+    type: int
+    description: Voltage corresponding to 0% state of charge (SOC) in mV.
+    default: 3500
+
+  v-soc-5:
+    type: int
+    description: Voltage corresponding to 5% SOC in mV.
+    default: 3660
+
+  v-soc-11:
+    type: int
+    description: Voltage corresponding to 11% SOC in mV.
+    default: 3684
+
+  v-soc-19:
+    type: int
+    description: Voltage corresponding to 19% SOC in mV.
+    default: 3724
+
+  v-soc-28:
+    type: int
+    description: Voltage corresponding to 28% SOC in mV.
+    default: 3764
+
+  v-soc-41:
+    type: int
+    description: Voltage corresponding to 41% SOC in mV.
+    default: 3804
+
+  v-soc-55:
+    type: int
+    description: Voltage corresponding to 55% SOC in mV.
+    default: 3868
+
+  v-soc-69:
+    type: int
+    description: Voltage corresponding to 69% SOC in mV.
+    default: 3948
+
+  v-soc-84:
+    type: int
+    description: Voltage corresponding to 84% SOC in mV.
+    default: 4068
+
+  v-soc-100:
+    type: int
+    description: Voltage corresponding to 100% SOC in mV.
+    default: 4204
+
+  bat-cap:
+    type: int
+    description: Battery capacity in mAh.
+    default: 100
+
+  bat-cap-age:
+    type: int
+    description: |
+      Battery Capacity Reduction Percentage When BAT_SOCACM Overflows.
+      Default value corresponds to reset value of reduction.
+    enum:
+      - 0 # 0.8% reduction
+      - 1 # 1.5% reduction
+      - 2 # 3.1% reduction
+      - 3 # 6.3% reduction
+    default: 1 # 1.5% reduction
+
+  bat-cap-temp:
+    type: int
+    description: Battery Capacity Compensation with Temperature Coefficient.
+    enum:
+      - 0 # 0.2% / °C
+      - 1 # 0.4% / °C
+      - 2 # 0.6% / °C
+      - 3 # 0.8% / °C
+    default: 0 # 0.2% / °C
+
+  bat-cap-temp-en:
+    type: boolean
+    description: |
+      Enable battery capacity compensation with temperature coefficient.
+      Default value corresponds to reset value of compensation.
+
+  bat-cap-age-en:
+    type: boolean
+    description: |
+      Enable battery capacity reduction when BAT_SOCACM overflows.
+      Default value corresponds to reset value of reduction.
+
+  soc-low-threshold:
+    type: int
+    description: |
+      SOC low threshold in percentage.
+      Default value corresponds to reset value of threshold.
+    enum:
+      - 0 # 6% SOC low threshold
+      - 1 # 11% SOC low threshold
+      - 2 # 20% SOC low threshold
+      - 3 # 31% SOC low threshold
+    default: 1 # 11% SOC low threshold
+
+  sleep-mode-current-threshold:
+    type: int
+    description: |
+      Sleep mode current threshold in mA.
+      Default value corresponds to reset value of threshold.
+    enum:
+      - 0 # 5 mA sleep mode current threshold
+      - 1 # 10 mA sleep mode current threshold
+      - 2 # 20 mA sleep mode current threshold
+      - 3 # 40 mA sleep mode current threshold
+    default: 1 # 10 mA sleep mode current threshold
+
+  sleep-mode-update-rate:
+    type: int
+    description: |
+      Sleep mode update rate in seconds.
+      Default value corresponds to reset value of update rate.
+    enum:
+      - 0 # 1 minute sleep mode update rate
+      - 1 # 4 minute sleep mode update rate
+      - 2 # 8 minute sleep mode update rate
+      - 3 # 16 minute sleep mode update rate
+    default: 0 # 1 minute sleep mode update rate
+
+  fuel-gauge-operation-mode:
+    type: int
+    description: |
+      Fuel gauge operation mode.
+      Default value corresponds to reset value of mode.
+    enum:
+      - 0 # Normal mode
+      - 1 # Sleep mode
+    default: 0 # Normal mode
+
+  fuel-gauge-enable:
+    type: boolean
+    description: Enables fuel gauge on initialization.
