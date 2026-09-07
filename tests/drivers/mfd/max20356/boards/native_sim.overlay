@@ -10,6 +10,13 @@
 		compatible = "adi,max20356";
 		reg = <0x28>;
 		status = "okay";
+
+		gpio_mpc: gpio {
+			compatible = "adi,max20356-gpio";
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <8>;
+		};
 	};
 
 	pmic58: max20358@29 {
