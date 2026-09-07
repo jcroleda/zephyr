@@ -1,0 +1,25 @@
+# Copyright (c) 2026 Analog Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+config MFD_MAX20356
+	bool "MAX20356/MAX20358 PMIC multi-function device driver"
+	default y
+	depends on DT_HAS_ADI_MAX20356_ENABLED || DT_HAS_ADI_MAX20358_ENABLED
+	select I2C
+	help
+	  Enable the Analog Devices MAX20356/MAX20358 wearable PMIC
+	  multi-function device driver. This parent driver provides the shared
+	  I2C register access, variant selection, power-mode/reset commands and
+	  monitor-mux control used by the regulator, charger, GPIO and watchdog
+	  child drivers.
+
+config EMUL_MAX20356
+	bool "MAX20356/MAX20358 PMIC emulator"
+	default y
+	depends on EMUL
+	depends on MFD_MAX20356
+	help
+	  Enable the register-model I2C emulator for the MAX20356/MAX20358 PMIC.
+	  Backs the MFD parent's register accesses with an in-memory register
+	  file so the driver and its children can be tested without hardware.
+	  Read-only registers present a constant value on the I2C read path.

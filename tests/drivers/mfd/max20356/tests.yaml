@@ -1,0 +1,10 @@
+# Copyright (c) 2026 Analog Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+tests:
+  drivers.mfd.max20356:
+    tags:
+      - drivers
+      - mfd
+    platform_allow:
+      - native_sim

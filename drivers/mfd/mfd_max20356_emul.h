@@ -1,0 +1,54 @@
+/*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#ifndef ZEPHYR_DRIVERS_MFD_MFD_MAX20356_EMUL_H_
+#define ZEPHYR_DRIVERS_MFD_MFD_MAX20356_EMUL_H_
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include <zephyr/drivers/emul.h>
+
+/**
+ * @brief Back-door write of a register in the emulator.
+ *
+ * Bypasses the read-only protection applied to the I2C write path, letting a
+ * test seed status/read-only registers to a chosen value.
+ *
+ * @param target Emulator instance.
+ * @param reg Register address.
+ * @param val Value to store.
+ */
+void mfd_max20356_emul_set_reg(const struct emul *target, uint8_t reg, uint8_t val);
+
+/**
+ * @brief Back-door read of a register in the emulator.
+ *
+ * @param target Emulator instance.
+ * @param reg Register address.
+ * @param val Destination for the stored value.
+ */
+void mfd_max20356_emul_get_reg(const struct emul *target, uint8_t reg, uint8_t *val);
+
+/**
+ * @brief Reset the emulator register file to power-on defaults.
+ *
+ * @param target Emulator instance.
+ */
+void mfd_max20356_emul_reset(const struct emul *target);
+
+/**
+ * @brief Force every subsequent I2C transfer to fail.
+ *
+ * Lets a test exercise the driver's bus-error paths.
+ *
+ * @param target Emulator instance.
+ * @param fail True to make transfers return -EIO, false to resume normal
+ *             operation.
+ */
+void mfd_max20356_emul_set_fail(const struct emul *target, bool fail);
+
+#endif /* ZEPHYR_DRIVERS_MFD_MFD_MAX20356_EMUL_H_ */
