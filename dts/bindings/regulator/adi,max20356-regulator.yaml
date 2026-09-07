@@ -1,0 +1,81 @@
+# Copyright (c) 2026 Analog Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Analog Devices MAX20356/MAX20358 PMIC regulators.
+
+  The regulators node is a child of the MAX20356 MFD parent. Each rail is a
+  child node whose node name selects the rail; the driver strictly matches these
+  names: BUCK1, BUCK2, BUCK3, BUCKBOOST, LDO1, LDO2, LDO3, LDO4, LSW1, LSW2,
+  LSW3.
+
+  Bucks support dynamic voltage scaling (DVS): I2C (Mode 0, default), GPIO
+  (Mode 1, an MPC-pin pair selects one of four preset voltages) and SPI (Mode 2,
+  MPC0/1/2 driven by the controller referenced by the parent's spi-dvs phandle).
+  The buck-boost and LDOs do not participate in MPC/SPI DVS.
+
+  LDO1 and LDO2 can operate as a linear regulator or a load switch, selected via
+  regulator-initial-mode using the MAX20356_MODE_* macros from
+  <zephyr/dt-bindings/mfd/max20356.h>.
+
+compatible: "adi,max20356-regulator"
+
+include: base.yaml
+
+child-binding:
+  include:
+    - name: regulator.yaml
+      property-allowlist:
+        - regulator-min-microvolt
+        - regulator-max-microvolt
+        - regulator-init-microvolt
+        - regulator-always-on
+        - regulator-boot-on
+        - regulator-initial-mode
+        - regulator-allowed-modes
+        - regulator-active-discharge
+
+  properties:
+    adi,dvs-mode:
+      type: string
+      default: "i2c"
+      enum:
+        - "i2c"
+        - "gpio"
+        - "spi"
+      description: |
+        Dynamic voltage scaling mode for a buck rail (Buck<n>DvsCfg). "i2c"
+        drives the voltage over the I2C bus; "gpio" selects one of four preset
+        voltages from an MPC-pin pair (see adi,dvs-mpc-pair and adi,dvs-voltages);
+        "spi" repurposes MPC0/1/2 as an SPI DVS interface (requires the parent's
+        spi-dvs phandle). Ignored for the buck-boost, LDOs and load switches.
+
+    adi,dvs-mpc-pair:
+      type: array
+      description: |
+        For adi,dvs-mode = "gpio": the ordered MPC-pin pair (two entries, each
+        0..7) that selects the active DVS voltage. The first entry is the low
+        select bit, the second the high select bit, per the datasheet decode
+        table. These pins must not also be claimed by the GPIO child.
+
+    adi,dvs-voltages:
+      type: array
+      description: |
+        For adi,dvs-mode = "gpio": the four alternate output voltages in
+        microvolts (Buck<n>DvsVlt0..3) corresponding to MPC select states
+        00/01/10/11. Each value must lie within the rail's configured range.
+
+    adi,dvs-valley-current-microamp:
+      type: int
+      enum:
+        - 500000
+        - 1000000
+      description: |
+        DVS valley (inductor) current limit (Buck<n>DvsCfg0.Buck<n>DvsCur).
+
+    adi,ldo4-always-on-off-on-pfn1:
+      type: boolean
+      description: |
+        LDO4 only, MAX20358 variant only: enable "Always-On LDO Off Through PFN1"
+        (LDO4Cfg.LDO4RTC, 0x67 bit 7). On the MAX20356 this request is rejected
+        with -ENOTSUP and the bit is left cleared.

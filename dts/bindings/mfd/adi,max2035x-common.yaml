@@ -1,0 +1,35 @@
+# Copyright (c) 2026 Analog Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Common properties for the Analog Devices MAX20356/MAX20358 wearable PMIC.
+
+  This binding is included by the variant-specific bindings
+  (adi,max20356.yaml and adi,max20358.yaml). The variant is selected solely by
+  the parent node's compatible string; there is no runtime part-ID.
+
+  Subsystems are exposed as child nodes (regulator, charger, gpio, watchdog),
+  each with its own compatible. The integrated fuel gauge is NOT a child of this
+  node: describe it as a separate top-level "maxim,max17262" node at its own I2C
+  address.
+
+include: i2c-device.yaml
+
+properties:
+  reg:
+    required: true
+
+  int-gpios:
+    type: phandle-array
+    description: |
+      Host GPIO connected to the PMIC INTB pin (open-drain, active-low). When
+      present, the driver uses INTB as an interrupt trigger source: it decodes
+      the pending Int0-5/Status0-4 sources and dispatches registered callbacks.
+      When absent, the driver operates in a poll-only fallback.
+
+  spi-dvs:
+    type: phandle
+    description: |
+      SPI controller wired to MPC0/MPC1/MPC2 (CS/SCLK/DIN) for SPI dynamic
+      voltage scaling (DVS Mode 2). Required only when a buck child selects
+      adi,dvs-mode = "spi".
