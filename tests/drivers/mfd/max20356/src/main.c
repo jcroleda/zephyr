@@ -160,15 +160,6 @@ ZTEST_F(max20356, test_variant)
 	zassert_equal(mfd_max20356_get_variant(fixture->dev), MAX20356_VARIANT_MAX20356);
 }
 
-/* Without CONFIG_MFD_MAX20356_TRIGGER the callback API reports -ENOTSUP. */
-ZTEST_F(max20356, test_callbacks_not_supported)
-{
-	zassert_equal(mfd_max20356_add_callback(fixture->dev, MAX20356_EVT_CHARGER, NULL, NULL),
-		      -ENOTSUP);
-	zassert_equal(mfd_max20356_remove_callback(fixture->dev, MAX20356_EVT_CHARGER, NULL),
-		      -ENOTSUP);
-}
-
 /* A bus error propagates as a negative errno through every access helper. */
 ZTEST_F(max20356, test_bus_error_propagates)
 {

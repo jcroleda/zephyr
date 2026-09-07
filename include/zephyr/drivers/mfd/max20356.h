@@ -186,6 +186,8 @@ int mfd_max20356_mon_select(const struct device *dev, uint8_t channel, uint8_t r
  */
 int mfd_max20356_wdt_set_rsttype(const struct device *dev, enum max20356_wdt_rsttype rsttype);
 
+
+#ifdef CONFIG_MFD_MAX20356_TRIGGER
 /**
  * @brief Register an INTB event callback.
  *
@@ -218,6 +220,7 @@ int mfd_max20356_add_callback(const struct device *dev, enum max20356_event evt,
  */
 int mfd_max20356_remove_callback(const struct device *dev, enum max20356_event evt,
 				 max20356_cb_t cb);
+#endif /* CONFIG_MFD_MAX20356_TRIGGER */
 
 #ifdef __cplusplus
 }

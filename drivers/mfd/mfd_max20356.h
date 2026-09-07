@@ -941,10 +941,16 @@ struct mfd_max20356_data {
 #ifdef CONFIG_MFD_MAX20356_TRIGGER
 	const struct device *dev;
 	struct gpio_callback gpio_cb;
-	struct k_work work;
 	struct k_mutex cb_lock;
 	max20356_cb_t cb[MAX20356_EVT_MAX];
 	void *cb_user[MAX20356_EVT_MAX];
+#if defined(CONFIG_MAX20356_TRIGGER_OWN_THREAD)
+	K_KERNEL_STACK_MEMBER(thread_stack, CONFIG_MAX20356_THREAD_STACK_SIZE);
+	struct k_thread thread;
+	struct k_sem sem;
+#else
+	struct k_work work;
+#endif
 #endif
 };
 

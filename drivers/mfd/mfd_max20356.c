@@ -96,29 +96,6 @@ int mfd_max20356_wdt_set_rsttype(const struct device *dev, enum max20356_wdt_rst
 				       FIELD_PREP(MAX20356_WDCNTL_WDRSTTYPE_MSK, rsttype));
 }
 
-#ifndef CONFIG_MFD_MAX20356_TRIGGER
-int mfd_max20356_add_callback(const struct device *dev, enum max20356_event evt,
-			      max20356_cb_t cb, void *user)
-{
-	ARG_UNUSED(dev);
-	ARG_UNUSED(evt);
-	ARG_UNUSED(cb);
-	ARG_UNUSED(user);
-
-	return -ENOTSUP;
-}
-
-int mfd_max20356_remove_callback(const struct device *dev, enum max20356_event evt,
-				 max20356_cb_t cb)
-{
-	ARG_UNUSED(dev);
-	ARG_UNUSED(evt);
-	ARG_UNUSED(cb);
-
-	return -ENOTSUP;
-}
-#endif /* CONFIG_MFD_MAX20356_TRIGGER */
-
 static int mfd_max20356_init(const struct device *dev)
 {
 	const struct mfd_max20356_config *config = dev->config;

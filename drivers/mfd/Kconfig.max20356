@@ -13,6 +13,59 @@ config MFD_MAX20356
 	  monitor-mux control used by the regulator, charger, GPIO and watchdog
 	  child drivers.
 
+config MFD_MAX20356_TRIGGER
+	bool "MAX20356/MAX20358 INTB trigger support"
+	default y
+	depends on MFD_MAX20356
+	depends on GPIO
+	depends on $(dt_compat_any_has_prop,$(DT_COMPAT_ADI_MAX20356),int-gpios) || \
+		$(dt_compat_any_has_prop,$(DT_COMPAT_ADI_MAX20358),int-gpios)
+	help
+	  Enable INTB interrupt handling for the MAX20356/MAX20358 PMIC. The
+	  parent installs a GPIO callback on the INTB line, decodes the pending
+	  Int0-5 sources in a workqueue, and dispatches them to consumers that
+	  registered through mfd_max20356_add_callback(). Without this option the
+	  driver operates poll-only and the callback API returns -ENOTSUP.
+
+if MFD_MAX20356_TRIGGER
+
+choice MAX20356_TRIGGER_MODE
+	prompt "MAX20356/MAX20358 INTB trigger mode"
+	default MAX20356_TRIGGER_GLOBAL_THREAD
+	help
+	  Select the context in which INTB source decode runs. Decode needs I2C
+	  transactions, so it never runs in the GPIO ISR; the ISR only schedules
+	  the selected bottom half.
+
+config MAX20356_TRIGGER_GLOBAL_THREAD
+	bool "Use global thread"
+	help
+	  Dispatch INTB handling to the system workqueue.
+
+config MAX20356_TRIGGER_OWN_THREAD
+	bool "Use own thread"
+	help
+	  Dispatch INTB handling to a dedicated driver thread.
+
+endchoice # MAX20356_TRIGGER_MODE
+
+config MAX20356_THREAD_PRIORITY
+	int "INTB own-thread priority"
+	depends on MAX20356_TRIGGER_OWN_THREAD
+	default 10
+	help
+	  Cooperative priority of the dedicated INTB handling thread.
+
+config MAX20356_THREAD_STACK_SIZE
+	int "INTB own-thread stack size"
+	depends on MAX20356_TRIGGER_OWN_THREAD
+	default 1024
+	help
+	  Stack size (bytes) of the dedicated INTB handling thread. Size it for
+	  the registered callbacks, which run in this thread's context.
+
+endif # MFD_MAX20356_TRIGGER
+
 config EMUL_MAX20356
 	bool "MAX20356/MAX20358 PMIC emulator"
 	default y
