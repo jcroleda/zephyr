@@ -120,12 +120,15 @@ static void max20356_process_int(const struct device *dev)
 	const struct mfd_max20356_config *config = dev->config;
 	uint8_t status[MAX20356_INT_REG_COUNT] = {0};
 	uint16_t fired = 0;
+	uint8_t first = 0;
 	int ret;
 
-	/* Int0-5 are clear-on-read: one read per register latches and clears all
-	 * pending sources.
-	 */
-	for (uint8_t i = 0; i < MAX20356_INT_REG_COUNT; i++) {
+	/* read only INT5 if watchdog is active */
+	if (data->wdt_active) {
+		first = 5U;
+	}
+
+	for (uint8_t i = first; i < MAX20356_INT_REG_COUNT; i++) {
 		ret = mfd_max20356_reg_read(dev, MAX20356_REG_INT0 + i, &status[i]);
 		if (ret < 0) {
 			LOG_ERR("Int%u read failed: %d", i, ret);
@@ -210,6 +213,13 @@ int mfd_max20356_add_callback(const struct device *dev, enum max20356_event evt,
 	}
 
 	k_mutex_lock(&data->cb_lock, K_FOREVER);
+	/* The watchdog owns INTB exclusively while armed: any INTB source would
+	 * share Int5 with the feed, so registration is refused until it releases.
+	 */
+	if (data->wdt_active) {
+		k_mutex_unlock(&data->cb_lock);
+		return -EBUSY;
+	}
 	data->cb[evt] = cb;
 	data->cb_user[evt] = user;
 	ret = max20356_set_group_mask(dev, evt, true);

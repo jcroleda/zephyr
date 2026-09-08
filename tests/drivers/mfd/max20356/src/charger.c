@@ -26,6 +26,7 @@
 
 struct max20356_chg_fixture {
 	const struct device *dev;
+	const struct device *mfd;
 	const struct emul *emul;
 	struct gpio_dt_spec int_gpio;
 };
@@ -34,6 +35,7 @@ static void *chg_setup(void)
 {
 	static struct max20356_chg_fixture fixture = {
 		.dev = DEVICE_DT_GET(DT_NODELABEL(charger)),
+		.mfd = DEVICE_DT_GET(DT_NODELABEL(pmic)),
 		.emul = EMUL_DT_GET(DT_NODELABEL(pmic)),
 		.int_gpio = GPIO_DT_SPEC_GET(DT_NODELABEL(pmic), int_gpios),
 	};
@@ -46,6 +48,14 @@ static void *chg_setup(void)
 static void chg_before(void *f)
 {
 	struct max20356_chg_fixture *fixture = f;
+	union charger_propval clr = {0};
+
+	/* Notifier state is static driver data that survives across tests; clear
+	 * both so each test starts with no INTB callback held (registration is
+	 * lazy: a notifier claims its group, a NULL notifier releases it).
+	 */
+	(void)charger_set_prop(fixture->dev, CHARGER_PROP_STATUS_NOTIFICATION, &clr);
+	(void)charger_set_prop(fixture->dev, CHARGER_PROP_ONLINE_NOTIFICATION, &clr);
 
 	mfd_max20356_emul_reset(fixture->emul);
 }
@@ -295,4 +305,53 @@ ZTEST_F(max20356_chg, test_status_notifier_on_intb)
 
 	zassert_true(status_notify_count > 0, "status notifier did not fire");
 	zassert_equal(notified_status, CHARGER_STATUS_CHARGING);
+}
+
+/* With no notifier installed the charger holds no INTB callback, so an exclusive
+ * consumer can claim INTB. Installing a notifier then blocks a fresh claim, and
+ * clearing it frees INTB again. mfd_max20356_wdt_claim() is the observable proxy
+ * for "is any INTB event callback registered".
+ */
+ZTEST_F(max20356_chg, test_lazy_registration_frees_intb)
+{
+	union charger_propval nv = {.status_notification = on_status};
+	union charger_propval clr = {0};
+
+	/* before-hook cleared both notifiers: INTB is free. */
+	zassert_ok(mfd_max20356_wdt_claim(fixture->mfd, true), "claim should succeed when idle");
+	zassert_ok(mfd_max20356_wdt_claim(fixture->mfd, false));
+
+	/* Installing a notifier claims the CHARGER/THERMAL groups. */
+	zassert_ok(charger_set_prop(fixture->dev, CHARGER_PROP_STATUS_NOTIFICATION, &nv));
+	zassert_equal(mfd_max20356_wdt_claim(fixture->mfd, true), -EBUSY,
+		      "claim should be refused while a notifier is installed");
+
+	/* Clearing it releases the groups and frees INTB again. */
+	zassert_ok(charger_set_prop(fixture->dev, CHARGER_PROP_STATUS_NOTIFICATION, &clr));
+	zassert_ok(mfd_max20356_wdt_claim(fixture->mfd, true), "claim should succeed once freed");
+	zassert_ok(mfd_max20356_wdt_claim(fixture->mfd, false));
+}
+
+/* A notifier cannot be installed while an exclusive consumer owns INTB: the lazy
+ * add_callback is refused and the notifier state is rolled back so it does not
+ * silently point at a callback the parent never registered.
+ */
+ZTEST_F(max20356_chg, test_notifier_refused_while_intb_claimed)
+{
+	union charger_propval nv = {.online_notification = NULL};
+
+	nv.status_notification = on_status;
+
+	zassert_ok(mfd_max20356_wdt_claim(fixture->mfd, true));
+
+	zassert_equal(charger_set_prop(fixture->dev, CHARGER_PROP_STATUS_NOTIFICATION, &nv), -EBUSY,
+		      "notifier install should fail while INTB is claimed");
+
+	mfd_max20356_wdt_claim(fixture->mfd, false);
+
+	/* Rollback: the notifier is not left installed, so no INTB group is held
+	 * and a subsequent claim still succeeds.
+	 */
+	zassert_ok(mfd_max20356_wdt_claim(fixture->mfd, true), "notifier state was not rolled back");
+	zassert_ok(mfd_max20356_wdt_claim(fixture->mfd, false));
 }

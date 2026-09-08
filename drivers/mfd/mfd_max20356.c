@@ -172,6 +172,53 @@ int mfd_max20356_wdt_set_rsttype(const struct device *dev, enum max20356_wdt_rst
 				       FIELD_PREP(MAX20356_WDCNTL_WDRSTTYPE_MSK, rsttype));
 }
 
+int mfd_max20356_wdt_feed(const struct device *dev)
+{
+	uint8_t int5;
+
+	/* Reading Int5.WDTmr kicks the timer. Int5 is clear-on-read; its only other
+	 * bit, I2cTmoInt, is cleared as a side effect. That is acceptable because the
+	 * watchdog owns INTB exclusively while armed (mfd_max20356_wdt_claim): no
+	 * consumer is watching I2cTmoInt during that window. See REQ-WDT-004.
+	 */
+	return mfd_max20356_reg_read(dev, MAX20356_REG_INT5, &int5);
+}
+
+#ifdef CONFIG_WDT_MAX20356
+int mfd_max20356_wdt_claim(const struct device *dev, bool claim)
+{
+	struct mfd_max20356_data *data = dev->data;
+	int ret = 0;
+
+	k_mutex_lock(&data->cb_lock, K_FOREVER);
+
+	if (claim) {
+		/* The watchdog needs Int5 to itself. Refuse if any event callback is
+		 * registered: those consumers drive INTB dispatch, which reads Int5
+		 * and would race the feed. I2cTmoInt has no callback group of its own
+		 * beyond MISC, and MISC gathers other sources too, so any live
+		 * callback is treated as a conflict.
+		 */
+		for (uint8_t evt = 0; evt < MAX20356_EVT_MAX; evt++) {
+			if (data->cb[evt] != NULL) {
+				ret = -EBUSY;
+				break;
+			}
+		}
+
+		if (ret == 0) {
+			data->wdt_active = true;
+		}
+	} else {
+		data->wdt_active = false;
+	}
+
+	k_mutex_unlock(&data->cb_lock);
+
+	return ret;
+}
+#endif /* CONFIG_WDT_MAX20356 */
+
 static int mfd_max20356_init(const struct device *dev)
 {
 	const struct mfd_max20356_config *config = dev->config;

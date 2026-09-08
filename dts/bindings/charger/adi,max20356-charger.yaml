@@ -10,6 +10,15 @@ description: |
   from the properties below; runtime zone changes are hardware-managed and
   reported through the charger health/status properties.
 
+  Status/online reporting works poll-only and uses no interrupt. The optional
+  status and online notifier callbacks are interrupt-driven: installing one makes
+  the charger claim its INTB event groups on the parent, and clearing it releases
+  them. This shares the parent's INTB path with the watchdog, which requires
+  exclusive INTB ownership: while a notifier is installed the watchdog cannot arm,
+  and while the watchdog is armed installing a notifier is refused with -EBUSY.
+  To use both on one parent, keep the charger poll-only (install no notifier);
+  otherwise place the watchdog under a separate MAX20356/MAX20358 instance.
+
 compatible: "adi,max20356-charger"
 
 include: battery.yaml

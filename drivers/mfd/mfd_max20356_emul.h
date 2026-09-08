@@ -64,4 +64,17 @@ void mfd_max20356_emul_set_fail(const struct emul *target, bool fail);
  */
 void mfd_max20356_emul_set_locked(const struct emul *target, uint8_t lockmsk1_bits, bool locked);
 
+/**
+ * @brief Engage or release the lock state for a set of LockMsk3 domains.
+ *
+ * Same as mfd_max20356_emul_set_locked() but for the LockMsk3 bank
+ * (charger/limiter/watchdog domains), letting a test validate the unlock/write/
+ * re-lock sequence on the watchdog register.
+ *
+ * @param target Emulator instance.
+ * @param lockmsk3_bits Mask of LockMsk3 bits to lock (set) or unlock (clear).
+ * @param locked True to lock the given bits, false to unlock them.
+ */
+void mfd_max20356_emul_set_locked3(const struct emul *target, uint8_t lockmsk3_bits, bool locked);
+
 #endif /* ZEPHYR_DRIVERS_MFD_MFD_MAX20356_EMUL_H_ */

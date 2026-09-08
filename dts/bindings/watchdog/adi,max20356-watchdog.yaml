@@ -8,6 +8,17 @@ description: |
   API; the timeout window and reset behavior are set at runtime through the wdt
   API, so no special devicetree properties are required.
 
+  The watchdog is fed by reading the shared Int5 register, so it must own the
+  parent's INTB path exclusively: it cannot be armed while any INTB event consumer
+  is active, and no consumer can register an interrupt callback while it is armed.
+  Registration is refused with -EBUSY in either direction.
+
+  The charger registers its INTB callbacks lazily, only while a status or online
+  notifier is installed, so a poll-only charger (no notifier) leaves INTB free and
+  can share a parent with the watchdog. A charger using notifications, or any
+  other active INTB consumer, must be placed under a separate
+  MAX20356/MAX20358 instance from the watchdog.
+
 compatible: "adi,max20356-watchdog"
 
 include: base.yaml

@@ -195,6 +195,38 @@ ZTEST_F(max20356_trig, test_remove_callback_notfound)
 	zassert_equal(mfd_max20356_remove_callback(fixture->dev, MAX20356_EVT_MAX, cb_a), -EINVAL);
 }
 
+/* While the watchdog owns INTB, the bottom half reads Int5 alone and leaves
+ * Int0-4 untouched, so it cannot clear a source outside the watchdog's own
+ * register. A seeded Int0 survives an INTB assertion; the seeded Int5 is read
+ * (cleared) as the watchdog path expects.
+ */
+ZTEST_F(max20356_trig, test_wdt_active_reads_int5_only)
+{
+	uint8_t int0, int5;
+
+	/* Callbacks are static driver state that earlier tests may have left
+	 * registered; the watchdog cannot claim INTB while any are present.
+	 */
+	for (uint8_t evt = 0; evt < MAX20356_EVT_MAX; evt++) {
+		(void)mfd_max20356_remove_callback(fixture->dev, (enum max20356_event)evt, cb_a);
+		(void)mfd_max20356_remove_callback(fixture->dev, (enum max20356_event)evt, cb_b);
+	}
+
+	zassert_ok(mfd_max20356_wdt_claim(fixture->dev, true));
+
+	mfd_max20356_emul_set_reg(fixture->emul, MAX20356_REG_INT0, MAX20356_INT0_CHGSTATINT_MSK);
+	mfd_max20356_emul_set_reg(fixture->emul, MAX20356_REG_INT5, MAX20356_INT5_WDTMR_MSK);
+	fire_intb(fixture);
+
+	mfd_max20356_emul_get_reg(fixture->emul, MAX20356_REG_INT0, &int0);
+	mfd_max20356_emul_get_reg(fixture->emul, MAX20356_REG_INT5, &int5);
+
+	zassert_equal(int0, MAX20356_INT0_CHGSTATINT_MSK, "Int0 was read: 0x%02x", int0);
+	zassert_equal(int5, 0x00, "Int5 not read/cleared: 0x%02x", int5);
+
+	(void)mfd_max20356_wdt_claim(fixture->dev, false);
+}
+
 /* Without int-gpios the device is poll-only: the callback API still registers
  * and unmasks, but no INTB line drives dispatch.
  */

@@ -38,6 +38,8 @@ struct max20356_emul_data {
 	 * locked and writes to them from the I2C path are dropped.
 	 */
 	uint8_t locked_mask;
+	/* Same, for the LockMsk3 bank (charger/limiter/watchdog domains). */
+	uint8_t locked_mask3;
 	bool fail;
 };
 
@@ -84,6 +86,19 @@ static uint8_t max20356_emul_reg_lock_bit(uint8_t reg)
 	case MAX20356_REG_LDO4ENA:
 	case MAX20356_REG_LDO4CFG:
 		return MAX20356_LOCKMSK1_LD4LCK_MSK;
+	default:
+		return 0U;
+	}
+}
+
+/* LockMsk3 bit guarding a lockable data register, or 0 if the register is not
+ * guarded by LockMsk3. Covers the watchdog register driven by the wdt child.
+ */
+static uint8_t max20356_emul_reg_lock3_bit(uint8_t reg)
+{
+	switch (reg) {
+	case MAX20356_REG_WDCNTL:
+		return MAX20356_LOCKMSK3_WDLCK_MSK;
 	default:
 		return 0U;
 	}
@@ -138,6 +153,7 @@ void mfd_max20356_emul_reset(const struct emul *target)
 	memset(data->regs, 0, sizeof(data->regs));
 	data->regs[MAX20356_REG_REVID] = MAX20356_EMUL_REVID;
 	data->locked_mask = 0U;
+	data->locked_mask3 = 0U;
 	data->fail = false;
 }
 
@@ -156,6 +172,17 @@ void mfd_max20356_emul_set_locked(const struct emul *target, uint8_t lockmsk1_bi
 		data->locked_mask |= lockmsk1_bits;
 	} else {
 		data->locked_mask &= (uint8_t)~lockmsk1_bits;
+	}
+}
+
+void mfd_max20356_emul_set_locked3(const struct emul *target, uint8_t lockmsk3_bits, bool locked)
+{
+	struct max20356_emul_data *data = target->data;
+
+	if (locked) {
+		data->locked_mask3 |= lockmsk3_bits;
+	} else {
+		data->locked_mask3 &= (uint8_t)~lockmsk3_bits;
 	}
 }
 
@@ -197,7 +224,7 @@ static int max20356_emul_transfer_i2c(const struct emul *target, struct i2c_msg 
 			}
 
 			/* Password write: unlock/lock the unmasked domains. A domain
-			 * is unmasked when its LockMsk1 bit is 0.
+			 * is unmasked when its LockMsk bit is 0.
 			 */
 			if (target_reg == MAX20356_REG_LOCKUNLOCK1) {
 				uint8_t unmasked = (uint8_t)~data->regs[MAX20356_REG_LOCKMSK1];
@@ -212,9 +239,27 @@ static int max20356_emul_transfer_i2c(const struct emul *target, struct i2c_msg 
 				continue;
 			}
 
+			if (target_reg == MAX20356_REG_LOCKUNLOCK3) {
+				uint8_t unmasked = (uint8_t)~data->regs[MAX20356_REG_LOCKMSK3];
+
+				if (msgs->buf[i] == MAX20356_EMUL_PASSWD_UNLOCK) {
+					data->locked_mask3 &= (uint8_t)~unmasked;
+				} else if (msgs->buf[i] == MAX20356_EMUL_PASSWD_LOCK) {
+					data->locked_mask3 |= unmasked;
+				}
+
+				data->regs[target_reg] = msgs->buf[i];
+				continue;
+			}
+
 			/* Drop writes to a register whose lock domain is engaged. */
 			lock_bit = max20356_emul_reg_lock_bit(target_reg);
 			if ((lock_bit != 0U) && ((data->locked_mask & lock_bit) != 0U)) {
+				continue;
+			}
+
+			lock_bit = max20356_emul_reg_lock3_bit(target_reg);
+			if ((lock_bit != 0U) && ((data->locked_mask3 & lock_bit) != 0U)) {
 				continue;
 			}
 
@@ -234,7 +279,18 @@ static int max20356_emul_transfer_i2c(const struct emul *target, struct i2c_msg 
 		}
 
 		for (int i = 0; i < msgs->len; i++) {
-			msgs->buf[i] = data->regs[reg + i];
+			uint8_t src_reg = reg + i;
+
+			msgs->buf[i] = data->regs[src_reg];
+
+			/* Int0-5 (0x07-0x0C) are clear-on-read: the read latches the
+			 * value and clears the source. This makes a watchdog feed
+			 * (Int5.WDTmr read) observable and matches the trigger's
+			 * clear-on-read assumption.
+			 */
+			if (src_reg >= MAX20356_REG_INT0 && src_reg <= MAX20356_REG_INT5) {
+				data->regs[src_reg] = 0U;
+			}
 		}
 
 		return 0;

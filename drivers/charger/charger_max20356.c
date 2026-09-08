@@ -74,6 +74,17 @@ struct charger_max20356_data {
 	bool charger_enabled;
 	charger_status_notifier_t status_notifier;
 	charger_online_notifier_t online_notifier;
+#ifdef CONFIG_MFD_MAX20356_TRIGGER
+	/* Which INTB event groups the driver currently holds a callback for.
+	 * Registration is lazy: a group is claimed only while a consumer has the
+	 * matching notifier installed, so a charger with no notifier in use leaves
+	 * INTB free for another consumer (for example the watchdog, which requires
+	 * exclusive INTB ownership).
+	 */
+	bool cb_chg_active;
+	bool cb_thm_active;
+	bool cb_usb_active;
+#endif /* CONFIG_MFD_MAX20356_TRIGGER */
 };
 
 static int charger_max20356_get_status(const struct device *dev, enum charger_status *status)
@@ -321,29 +332,6 @@ static int charger_max20356_get_prop(const struct device *dev, charger_prop_t pr
 	}
 }
 
-static int charger_max20356_set_prop(const struct device *dev, charger_prop_t prop,
-				     const union charger_propval *val)
-{
-	struct charger_max20356_data *data = dev->data;
-
-	switch (prop) {
-	case CHARGER_PROP_CONSTANT_CHARGE_CURRENT_UA:
-		return charger_max20356_set_constant_charge_current(dev,
-								    val->const_charge_current_ua);
-	case CHARGER_PROP_CONSTANT_CHARGE_VOLTAGE_UV:
-		return charger_max20356_set_constant_charge_voltage(dev,
-								    val->const_charge_voltage_uv);
-	case CHARGER_PROP_STATUS_NOTIFICATION:
-		data->status_notifier = val->status_notification;
-		return 0;
-	case CHARGER_PROP_ONLINE_NOTIFICATION:
-		data->online_notifier = val->online_notification;
-		return 0;
-	default:
-		return -ENOTSUP;
-	}
-}
-
 #ifdef CONFIG_MFD_MAX20356_TRIGGER
 /*
  * INTB event handler: charger/USB/thermal sources feed the status and online
@@ -376,28 +364,109 @@ static void charger_max20356_evt(const struct device *mfd_dev, enum max20356_eve
 	}
 }
 
-static int charger_max20356_register_callbacks(const struct device *dev)
+/* Add or drop the INTB callback for one event group so that *active tracks
+ * @p want. Adding can fail (for example -EBUSY while the watchdog owns INTB);
+ * dropping cannot, so *active only advances to the reached state.
+ */
+static int charger_max20356_set_group(const struct device *dev, enum max20356_event evt,
+				      bool *active, bool want)
 {
 	const struct charger_max20356_config *cfg = dev->config;
-	static const enum max20356_event events[] = {
-		MAX20356_EVT_CHARGER,
-		MAX20356_EVT_USB,
-		MAX20356_EVT_THERMAL,
-	};
 	int ret;
 
-	ARRAY_FOR_EACH(events, i) {
-		ret = mfd_max20356_add_callback(cfg->mfd_dev, events[i], charger_max20356_evt,
+	if (want == *active) {
+		return 0;
+	}
+
+	if (want) {
+		ret = mfd_max20356_add_callback(cfg->mfd_dev, evt, charger_max20356_evt,
 						(void *)dev);
 		if (ret != 0) {
-			LOG_ERR("Failed to register callback for event %d: %d", events[i], ret);
 			return ret;
 		}
+	} else {
+		(void)mfd_max20356_remove_callback(cfg->mfd_dev, evt, charger_max20356_evt);
 	}
+
+	*active = want;
+
+	return 0;
+}
+
+/* Reconcile INTB callback registration with the installed notifiers: the status
+ * notifier needs the CHARGER and THERMAL groups, the online notifier needs USB.
+ * No group is held while its notifier is NULL, so INTB stays free for exclusive
+ * consumers when notifications are unused.
+ */
+static int charger_max20356_sync_callbacks(const struct device *dev)
+{
+	struct charger_max20356_data *data = dev->data;
+	bool want_status = data->status_notifier != NULL;
+	int ret;
+
+	ret = charger_max20356_set_group(dev, MAX20356_EVT_CHARGER, &data->cb_chg_active,
+					 want_status);
+	if (ret != 0) {
+		return ret;
+	}
+
+	ret = charger_max20356_set_group(dev, MAX20356_EVT_THERMAL, &data->cb_thm_active,
+					 want_status);
+	if (ret != 0) {
+		return ret;
+	}
+
+	return charger_max20356_set_group(dev, MAX20356_EVT_USB, &data->cb_usb_active,
+					 data->online_notifier != NULL);
+}
+#else
+static int charger_max20356_sync_callbacks(const struct device *dev)
+{
+	ARG_UNUSED(dev);
 
 	return 0;
 }
 #endif /* CONFIG_MFD_MAX20356_TRIGGER */
+
+static int charger_max20356_set_prop(const struct device *dev, charger_prop_t prop,
+				     const union charger_propval *val)
+{
+	struct charger_max20356_data *data = dev->data;
+	int ret;
+
+	switch (prop) {
+	case CHARGER_PROP_CONSTANT_CHARGE_CURRENT_UA:
+		return charger_max20356_set_constant_charge_current(dev,
+								    val->const_charge_current_ua);
+	case CHARGER_PROP_CONSTANT_CHARGE_VOLTAGE_UV:
+		return charger_max20356_set_constant_charge_voltage(dev,
+								    val->const_charge_voltage_uv);
+	case CHARGER_PROP_STATUS_NOTIFICATION: {
+		charger_status_notifier_t prev = data->status_notifier;
+
+		data->status_notifier = val->status_notification;
+		ret = charger_max20356_sync_callbacks(dev);
+		if (ret != 0) {
+			data->status_notifier = prev;
+			(void)charger_max20356_sync_callbacks(dev);
+		}
+		return ret;
+	}
+	case CHARGER_PROP_ONLINE_NOTIFICATION: {
+		charger_online_notifier_t prev = data->online_notifier;
+
+		data->online_notifier = val->online_notification;
+		ret = charger_max20356_sync_callbacks(dev);
+		if (ret != 0) {
+			data->online_notifier = prev;
+			(void)charger_max20356_sync_callbacks(dev);
+		}
+		return ret;
+	}
+	default:
+		return -ENOTSUP;
+	}
+}
 
 static int charger_max20356_init(const struct device *dev)
 {
@@ -427,13 +496,6 @@ static int charger_max20356_init(const struct device *dev)
 			return ret;
 		}
 	}
-
-#ifdef CONFIG_MFD_MAX20356_TRIGGER
-	ret = charger_max20356_register_callbacks(dev);
-	if (ret != 0) {
-		return ret;
-	}
-#endif /* CONFIG_MFD_MAX20356_TRIGGER */
 
 	return 0;
 }

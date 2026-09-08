@@ -94,5 +94,13 @@
 		compatible = "adi,max20358";
 		reg = <0x29>;
 		status = "okay";
+
+		/* The watchdog needs a parent with no other INTB consumer so it can
+		 * own the shared Int5 register exclusively while armed. pmic58 has no
+		 * charger/regulator children, unlike pmic.
+		 */
+		wdog: watchdog {
+			compatible = "adi,max20356-watchdog";
+		};
 	};
 };

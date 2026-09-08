@@ -946,6 +946,10 @@ struct mfd_max20356_data {
 	struct k_mutex cb_lock;
 	max20356_cb_t cb[MAX20356_EVT_MAX];
 	void *cb_user[MAX20356_EVT_MAX];
+	/* Set while the watchdog owns INTB exclusively; blocks event callback
+	 * registration so no source shares Int5.WDTmr with a live feed.
+	 */
+	bool wdt_active;
 #if defined(CONFIG_MAX20356_TRIGGER_OWN_THREAD)
 	K_KERNEL_STACK_MEMBER(thread_stack, CONFIG_MAX20356_THREAD_STACK_SIZE);
 	struct k_thread thread;

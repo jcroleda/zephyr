@@ -242,6 +242,44 @@ int mfd_max20356_mon_select(const struct device *dev, uint8_t channel, uint8_t r
  */
 int mfd_max20356_wdt_set_rsttype(const struct device *dev, enum max20356_wdt_rsttype rsttype);
 
+/**
+ * @brief Feed the watchdog.
+ *
+ * The MAX20356 watchdog is fed by reading Int5.WDTmr. Int5 is clear-on-read and
+ * also carries I2cTmoInt, so this helper reads the whole register under the
+ * parent lock and, when INTB trigger support is enabled, dispatches the MISC
+ * event group if an I2cTmoInt was pending, so the feed does not silently discard
+ * that source. Used by the watchdog child; see REQ-WDT-004.
+ *
+ * @param dev MAX20356 MFD parent device.
+ *
+ * @retval 0 On success.
+ * @retval -errno Negative errno propagated from the I2C bus.
+ */
+int mfd_max20356_wdt_feed(const struct device *dev);
+
+/**
+ * @brief Claim or release exclusive INTB ownership for the watchdog.
+ *
+ * The watchdog feed reads Int5, which is clear-on-read and also carries
+ * I2cTmoInt, so an armed watchdog and the INTB event dispatch cannot safely
+ * share the interrupt path. While claimed, mfd_max20356_add_callback() is
+ * refused with -EBUSY; conversely a claim is refused with -EBUSY if any event
+ * callback is already registered. The I2cTmoInt source is exempt: it only shares
+ * Int5 and is expected to be silently consumed by the feed.
+ *
+ * When trigger support is not enabled there are no callbacks and no INTB, so a
+ * claim always succeeds.
+ *
+ * @param dev MAX20356 MFD parent device.
+ * @param claim True to acquire exclusive ownership, false to release it.
+ *
+ * @retval 0 On success.
+ * @retval -EBUSY An event callback is registered (on claim) so the watchdog
+ *                cannot run in isolation.
+ */
+int mfd_max20356_wdt_claim(const struct device *dev, bool claim);
+
 
 #ifdef CONFIG_MFD_MAX20356_TRIGGER
 /**
