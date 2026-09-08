@@ -36,6 +36,18 @@ child-binding:
         - regulator-active-discharge
 
   properties:
+    adi,buck-voltage-step-microvolt:
+      type: int
+      default: 50000
+      enum:
+        - 10000
+        - 25000
+        - 50000
+      description: |
+        Buck rail voltage step (Buck<n>VStep). Selects the buck output scale:
+        0.500-1.130V at 10mV, 0.500-2.075V at 25mV, or 0.500-3.650V at 50mV,
+        all from a 0.5V base (Buck<n>VSet[5:0]). Ignored for non-buck rails.
+
     adi,dvs-mode:
       type: string
       default: "i2c"
@@ -67,11 +79,20 @@ child-binding:
 
     adi,dvs-valley-current-microamp:
       type: int
+      default: 500000
       enum:
         - 500000
         - 1000000
       description: |
         DVS valley (inductor) current limit (Buck<n>DvsCfg0.Buck<n>DvsCur).
+
+    adi,dvs-spi:
+      type: phandle
+      description: |
+        For adi,dvs-mode = "spi": the SPI device (on a controller wired to
+        MPC0/1/2) used to clock DVS command bytes to this buck. The command byte
+        is {AD[1:0], VLT[5:0]} where AD selects the buck (0=buck1, 1=buck2,
+        2=buck3).
 
     adi,ldo4-always-on-off-on-pfn1:
       type: boolean

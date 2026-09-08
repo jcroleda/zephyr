@@ -51,4 +51,17 @@ void mfd_max20356_emul_reset(const struct emul *target);
  */
 void mfd_max20356_emul_set_fail(const struct emul *target, bool fail);
 
+/**
+ * @brief Engage or release the lock state for a set of LockMsk1 domains.
+ *
+ * Lets a test start from a locked state so the unlock/write/re-lock sequence in
+ * mfd_max20356_reg_update_locked() can be validated. Writes to a register whose
+ * domain is engaged are dropped on the I2C path until it is unlocked.
+ *
+ * @param target Emulator instance.
+ * @param lockmsk1_bits Mask of LockMsk1 bits to lock (set) or unlock (clear).
+ * @param locked True to lock the given bits, false to unlock them.
+ */
+void mfd_max20356_emul_set_locked(const struct emul *target, uint8_t lockmsk1_bits, bool locked);
+
 #endif /* ZEPHYR_DRIVERS_MFD_MFD_MAX20356_EMUL_H_ */

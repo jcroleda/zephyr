@@ -938,6 +938,8 @@ struct mfd_max20356_config {
 };
 
 struct mfd_max20356_data {
+	/* Serializes the unlock/write/re-lock sequence in reg_update_locked(). */
+	struct k_mutex lock;
 #ifdef CONFIG_MFD_MAX20356_TRIGGER
 	const struct device *dev;
 	struct gpio_callback gpio_cb;

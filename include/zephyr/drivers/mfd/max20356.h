@@ -66,6 +66,41 @@ enum max20356_wdt_rsttype {
 };
 
 /**
+ * @brief Password-protected lock domains.
+ *
+ * Each domain corresponds to one bit of a LockMsk register and its matching
+ * LockUnlock password register. mfd_max20356_reg_update_locked() unmasks a single
+ * domain, unlocks it, performs the write and re-locks. Domains BUCK1..LDO4 live in
+ * LockMsk1/LockUnlock1; CHG/LIM/WD live in LockMsk3/LockUnlock3.
+ */
+enum max20356_lock_domain {
+	/** Buck1 registers (LockMsk1.Bk1Lck) */
+	MAX20356_LOCK_BUCK1,
+	/** Buck2 registers (LockMsk1.Bk2Lck) */
+	MAX20356_LOCK_BUCK2,
+	/** Buck3 registers (LockMsk1.Bk3Lck) */
+	MAX20356_LOCK_BUCK3,
+	/** Buck-boost registers (LockMsk1.BbLck) */
+	MAX20356_LOCK_BBST,
+	/** LDO1 registers (LockMsk1.Ld1Lck) */
+	MAX20356_LOCK_LDO1,
+	/** LDO2 registers (LockMsk1.Ld2Lck) */
+	MAX20356_LOCK_LDO2,
+	/** LDO3 registers (LockMsk1.Ld3Lck) */
+	MAX20356_LOCK_LDO3,
+	/** LDO4 registers (LockMsk1.Ld4Lck) */
+	MAX20356_LOCK_LDO4,
+	/** Charger registers (LockMsk3.ChgLck) */
+	MAX20356_LOCK_CHG,
+	/** Input-limiter registers (LockMsk3.LimLck) */
+	MAX20356_LOCK_LIM,
+	/** Watchdog registers (LockMsk3.WdLck) */
+	MAX20356_LOCK_WD,
+	/** Number of lock domains */
+	MAX20356_LOCK_MAX,
+};
+
+/**
  * @brief Interrupt event groups dispatched from the INTB trigger.
  *
  * Consumers subscribe to a group with mfd_max20356_add_callback(); the parent
@@ -140,6 +175,27 @@ int mfd_max20356_reg_write(const struct device *dev, uint8_t reg, uint8_t val);
  * @retval -errno Negative errno propagated from the I2C bus.
  */
 int mfd_max20356_reg_update(const struct device *dev, uint8_t reg, uint8_t mask, uint8_t val);
+
+/**
+ * @brief Read-modify-write a password-protected register.
+ *
+ * Performs the REQ-LOCK-001 sequence: unmask @p domain in its LockMsk register,
+ * write the unlock password (0x55) to the matching LockUnlock register, apply the
+ * masked update, then re-apply the lock password (0xAA). The whole sequence is
+ * serialized against other lock users by the parent.
+ *
+ * @param dev MAX20356 MFD parent device.
+ * @param domain Lock domain guarding @p reg.
+ * @param reg Register address.
+ * @param mask Mask of bits to modify.
+ * @param val New value for the masked bits.
+ *
+ * @retval 0 On success.
+ * @retval -EINVAL Invalid lock domain.
+ * @retval -errno Negative errno propagated from the I2C bus.
+ */
+int mfd_max20356_reg_update_locked(const struct device *dev, enum max20356_lock_domain domain,
+				   uint8_t reg, uint8_t mask, uint8_t val);
 
 /**
  * @brief Get the device variant.

@@ -3,6 +3,18 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <zephyr/dt-bindings/mfd/max20356.h>
+
+&spi0 {
+	status = "okay";
+
+	dvs_spi_dev: dvs-spi-dev@0 {
+		compatible = "vnd,spi-device";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+	};
+};
+
 &i2c0 {
 	status = "okay";
 
@@ -23,6 +35,48 @@
 			compatible = "adi,max20356-charger";
 			constant-charge-current-microamp = <100000>;
 			constant-charge-voltage-microvolt = <4200000>;
+		};
+
+		regulators {
+			compatible = "adi,max20356-regulator";
+
+			reg_buck1: buck1 {
+				adi,buck-voltage-step-microvolt = <25000>;
+				regulator-min-microvolt = <500000>;
+				regulator-max-microvolt = <2075000>;
+			};
+
+			reg_buck2: buck2 {
+				adi,buck-voltage-step-microvolt = <25000>;
+				adi,dvs-mode = "gpio";
+				adi,dvs-mpc-pair = <3 5>;
+				adi,dvs-voltages = <1000000 1100000 1200000 1300000>;
+				adi,dvs-valley-current-microamp = <1000000>;
+				regulator-min-microvolt = <500000>;
+				regulator-max-microvolt = <2075000>;
+			};
+
+			reg_buck3: buck3 {
+				adi,buck-voltage-step-microvolt = <25000>;
+				adi,dvs-mode = "spi";
+				adi,dvs-spi = <&dvs_spi_dev>;
+				regulator-min-microvolt = <500000>;
+				regulator-max-microvolt = <2075000>;
+			};
+
+			reg_ldo1: ldo1 {
+				regulator-min-microvolt = <900000>;
+				regulator-max-microvolt = <4000000>;
+				regulator-initial-mode = <MAX20356_MODE_LDO>;
+			};
+
+			reg_ldo4: ldo4 {
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <1850000>;
+			};
+
+			reg_lsw1: lsw1 {
+			};
 		};
 	};
 

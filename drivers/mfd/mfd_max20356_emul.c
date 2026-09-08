@@ -28,10 +28,66 @@ LOG_MODULE_REGISTER(max20356_emul, CONFIG_MFD_LOG_LEVEL);
 /* Silicon revision reported by RevID (0x00); value is arbitrary for emulation. */
 #define MAX20356_EMUL_REVID 0x01U
 
+/* Passwords accepted by the LockUnlock1 register. */
+#define MAX20356_EMUL_PASSWD_UNLOCK 0x55U
+#define MAX20356_EMUL_PASSWD_LOCK   0xAAU
+
 struct max20356_emul_data {
 	uint8_t regs[MAX20356_EMUL_NUM_REGS];
+	/* Per-LockMsk1-bit lock state: bit set => that domain's registers are
+	 * locked and writes to them from the I2C path are dropped.
+	 */
+	uint8_t locked_mask;
 	bool fail;
 };
+
+/* LockMsk1 bit guarding a lockable data register, or 0 if the register is not
+ * password-protected. Covers the regulator rails driven by the child driver.
+ */
+static uint8_t max20356_emul_reg_lock_bit(uint8_t reg)
+{
+	switch (reg) {
+	case MAX20356_REG_BUCK1ENA:
+	case MAX20356_REG_BUCK1CFG0:
+	case MAX20356_REG_BUCK1ISET:
+	case MAX20356_REG_BUCK1VSET:
+	case MAX20356_REG_BUCK1DVSCFG0:
+	case MAX20356_REG_BUCK1DVSCFG1:
+	case MAX20356_REG_BUCK1DVSCFG2:
+	case MAX20356_REG_BUCK1DVSCFG3:
+	case MAX20356_REG_BUCK1DVSCFG4:
+		return MAX20356_LOCKMSK1_BK1LCK_MSK;
+	case MAX20356_REG_BUCK2ENA:
+	case MAX20356_REG_BUCK2VSET:
+	case MAX20356_REG_BUCK2ISET:
+		return MAX20356_LOCKMSK1_BK2LCK_MSK;
+	case MAX20356_REG_BUCK3ENA:
+	case MAX20356_REG_BUCK3VSET:
+	case MAX20356_REG_BUCK3ISET:
+		return MAX20356_LOCKMSK1_BK3LCK_MSK;
+	case MAX20356_REG_BBSTENA:
+	case MAX20356_REG_BBSTVSET:
+	case MAX20356_REG_BBSTISET:
+		return MAX20356_LOCKMSK1_BBLCK_MSK;
+	case MAX20356_REG_LDO1ENA:
+	case MAX20356_REG_LDO1VSET:
+	case MAX20356_REG_LDO1CFG:
+		return MAX20356_LOCKMSK1_LD1LCK_MSK;
+	case MAX20356_REG_LDO2ENA:
+	case MAX20356_REG_LDO2VSET:
+	case MAX20356_REG_LDO2CFG:
+		return MAX20356_LOCKMSK1_LD2LCK_MSK;
+	case MAX20356_REG_LDO3ENA:
+	case MAX20356_REG_LDO3VSET:
+	case MAX20356_REG_LDO3CFG:
+		return MAX20356_LOCKMSK1_LD3LCK_MSK;
+	case MAX20356_REG_LDO4ENA:
+	case MAX20356_REG_LDO4CFG:
+		return MAX20356_LOCKMSK1_LD4LCK_MSK;
+	default:
+		return 0U;
+	}
+}
 
 struct max20356_emul_cfg {
 	uint16_t addr;
@@ -81,6 +137,7 @@ void mfd_max20356_emul_reset(const struct emul *target)
 
 	memset(data->regs, 0, sizeof(data->regs));
 	data->regs[MAX20356_REG_REVID] = MAX20356_EMUL_REVID;
+	data->locked_mask = 0U;
 	data->fail = false;
 }
 
@@ -89,6 +146,17 @@ void mfd_max20356_emul_set_fail(const struct emul *target, bool fail)
 	struct max20356_emul_data *data = target->data;
 
 	data->fail = fail;
+}
+
+void mfd_max20356_emul_set_locked(const struct emul *target, uint8_t lockmsk1_bits, bool locked)
+{
+	struct max20356_emul_data *data = target->data;
+
+	if (locked) {
+		data->locked_mask |= lockmsk1_bits;
+	} else {
+		data->locked_mask &= (uint8_t)~lockmsk1_bits;
+	}
 }
 
 static int max20356_emul_transfer_i2c(const struct emul *target, struct i2c_msg *msgs,
@@ -122,8 +190,31 @@ static int max20356_emul_transfer_i2c(const struct emul *target, struct i2c_msg 
 		/* Write: register address followed by one or more data bytes. */
 		for (int i = 1; i < msgs->len; i++) {
 			uint8_t target_reg = reg + (i - 1);
+			uint8_t lock_bit;
 
 			if (max20356_emul_reg_is_ro(target_reg)) {
+				continue;
+			}
+
+			/* Password write: unlock/lock the unmasked domains. A domain
+			 * is unmasked when its LockMsk1 bit is 0.
+			 */
+			if (target_reg == MAX20356_REG_LOCKUNLOCK1) {
+				uint8_t unmasked = (uint8_t)~data->regs[MAX20356_REG_LOCKMSK1];
+
+				if (msgs->buf[i] == MAX20356_EMUL_PASSWD_UNLOCK) {
+					data->locked_mask &= (uint8_t)~unmasked;
+				} else if (msgs->buf[i] == MAX20356_EMUL_PASSWD_LOCK) {
+					data->locked_mask |= unmasked;
+				}
+
+				data->regs[target_reg] = msgs->buf[i];
+				continue;
+			}
+
+			/* Drop writes to a register whose lock domain is engaged. */
+			lock_bit = max20356_emul_reg_lock_bit(target_reg);
+			if ((lock_bit != 0U) && ((data->locked_mask & lock_bit) != 0U)) {
 				continue;
 			}
 
