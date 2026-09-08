@@ -18,6 +18,12 @@
 			#gpio-cells = <2>;
 			ngpios = <8>;
 		};
+
+		charger: charger {
+			compatible = "adi,max20356-charger";
+			constant-charge-current-microamp = <100000>;
+			constant-charge-voltage-microvolt = <4200000>;
+		};
 	};
 
 	pmic58: max20358@29 {

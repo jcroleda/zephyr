@@ -1,0 +1,25 @@
+# Copyright (c) 2026 Analog Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+config CHARGER_MAX20356
+	bool "MAX20356/MAX20358 battery charger driver"
+	default y
+	depends on DT_HAS_ADI_MAX20356_CHARGER_ENABLED
+	depends on MFD_MAX20356
+	help
+	  Enable the Analog Devices MAX20356/MAX20358 battery charger child
+	  driver. Exposes the Zephyr charger API (enable/disable, fast-charge
+	  current, battery regulation voltage, and status/health/online
+	  reporting) on top of the MAX20356 MFD parent.
+
+if CHARGER_MAX20356
+
+config CHARGER_MAX20356_INIT_PRIORITY
+	int "MAX20356 charger init priority"
+	default 90
+	help
+	  Init priority for the MAX20356/MAX20358 charger child. Must be greater
+	  than CONFIG_MFD_INIT_PRIORITY so the parent (and its INTB trigger) is
+	  initialized first.
+
+endif # CHARGER_MAX20356
