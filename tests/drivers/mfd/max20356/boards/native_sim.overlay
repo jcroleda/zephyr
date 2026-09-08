@@ -10,6 +10,7 @@
 		compatible = "adi,max20356";
 		reg = <0x28>;
 		status = "okay";
+		int-gpios = <&gpio0 0 GPIO_ACTIVE_LOW>;
 
 		gpio_mpc: gpio {
 			compatible = "adi,max20356-gpio";
