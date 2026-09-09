@@ -16,11 +16,41 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/gpio/gpio_emul.h>
 #include <zephyr/drivers/mfd/max20356.h>
+#include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/util.h>
 
 #include "mfd_max20356.h"
 #include "mfd_max20356_emul.h"
+
+/* Snapshot of the DT-configured init registers, captured once right after the
+ * charger's POST_KERNEL init and before any test suite resets the emulator.
+ * test_init_config() asserts against these (see boot_snapshot_init).
+ */
+static struct {
+	uint8_t chgcur1;
+	uint8_t chgcntl0;
+	uint8_t chgtmr;
+	uint8_t thmcfg5;
+	uint8_t thmcfg7;
+	uint8_t chgctr2;
+} boot_snapshot;
+
+static int boot_snapshot_init(void)
+{
+	const struct emul *emul = EMUL_DT_GET(DT_NODELABEL(pmic));
+
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_CHGCUR1, &boot_snapshot.chgcur1);
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_CHGCNTL0, &boot_snapshot.chgcntl0);
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_CHGTMR, &boot_snapshot.chgtmr);
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_THMCFG5, &boot_snapshot.thmcfg5);
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_THMCFG7, &boot_snapshot.thmcfg7);
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_CHGCTR2, &boot_snapshot.chgctr2);
+
+	return 0;
+}
+/* APPLICATION level runs after POST_KERNEL device init, before ztest starts. */
+SYS_INIT(boot_snapshot_init, APPLICATION, 0);
 
 #define TRIG_SETTLE K_MSEC(50)
 
@@ -354,4 +384,51 @@ ZTEST_F(max20356_chg, test_notifier_refused_while_intb_claimed)
 	 */
 	zassert_ok(mfd_max20356_wdt_claim(fixture->mfd, true), "notifier state was not rolled back");
 	zassert_ok(mfd_max20356_wdt_claim(fixture->mfd, false));
+}
+
+/* The DT-configured init block (registers 0x18..0x28) is applied at boot only
+ * for fields present in the node; unset registers keep their power-on value.
+ * These assertions run against the snapshot taken in chg_setup(), before the
+ * per-test emulator reset.
+ */
+ZTEST(max20356_chg, test_init_config)
+{
+	/* adi,cc2-charge-current-microamp = 200000: second linear-range segment,
+	 * (200000 - 140000) / 10000 = 6 -> code 0x40 + 6 = 0x46.
+	 */
+	zassert_equal(FIELD_GET(MAX20356_CHGCUR1_CC2IFCHG_MSK, boot_snapshot.chgcur1), 0x46,
+		      "CC2 current not programmed");
+
+	/* adi,cc1-enable (boolean) sets ChgCntl0.CC1Enable; the other ChgCntl0
+	 * fields were absent and must remain 0.
+	 */
+	zassert_true((boot_snapshot.chgcntl0 & MAX20356_CHGCNTL0_CC1ENABLE_MSK) != 0U,
+		     "CC1Enable not set");
+	zassert_equal(boot_snapshot.chgcntl0 & MAX20356_CHGCNTL0_CHGAUTOSTOP_MSK, 0U,
+		      "absent ChgCntl0 field must not be written");
+
+	/* adi,safety-timer-minutes = 300 -> idx 2; adi,cc1-fastcharge-timer-minutes
+	 * = 120 -> idx 2. Precharge/maintain timers were absent (0).
+	 */
+	zassert_equal(FIELD_GET(MAX20356_CHGTMR_CHGTMR_MSK, boot_snapshot.chgtmr), 2,
+		      "safety timer not programmed");
+	zassert_equal(FIELD_GET(MAX20356_CHGTMR_CC1FCHGTMR_MSK, boot_snapshot.chgtmr), 2,
+		      "CC1 fast-charge timer not programmed");
+
+	/* adi,jeita-t3-cc1-celsius = 45 -> idx 5 (20,25,30,35,40,45). */
+	zassert_equal(FIELD_GET(MAX20356_THMCFG5_CHGT3THRCC1_MSK, boot_snapshot.thmcfg5), 5,
+		      "JEITA T3 CC1 threshold not programmed");
+
+	/* adi,thermistor-monitoring-mode = 3 -> raw ThmEn = 3. Pull-up and thermal
+	 * limit were absent and must remain 0.
+	 */
+	zassert_equal(FIELD_GET(MAX20356_THMCFG7_THMEN_MSK, boot_snapshot.thmcfg7), 3,
+		      "thermistor monitoring mode not programmed");
+	zassert_equal(boot_snapshot.thmcfg7 & MAX20356_THMCFG7_CHGTHRMLIM_MSK, 0U,
+		      "absent ThmCfg7 field must not be written");
+
+	/* No ChgCtr2 property is set in the overlay, so the register is skipped
+	 * entirely and keeps its power-on value (0 in the emulator).
+	 */
+	zassert_equal(boot_snapshot.chgctr2, 0U, "unconfigured register must not be written");
 }

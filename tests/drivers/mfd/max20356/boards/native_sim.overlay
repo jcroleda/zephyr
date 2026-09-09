@@ -35,6 +35,16 @@
 			compatible = "adi,max20356-charger";
 			constant-charge-current-microamp = <100000>;
 			constant-charge-voltage-microvolt = <4200000>;
+			/* Init-block coverage: one linear, one multi-field enum
+			 * register, one JEITA threshold and one boolean. CHGCTR2
+			 * is left unset to prove write-only-if-present.
+			 */
+			adi,cc2-charge-current-microamp = <200000>;
+			adi,safety-timer-minutes = <300>;
+			adi,cc1-fastcharge-timer-minutes = <120>;
+			adi,thermistor-monitoring-mode = <3>;
+			adi,jeita-t3-cc1-celsius = <45>;
+			adi,cc1-enable;
 		};
 
 		regulators {
