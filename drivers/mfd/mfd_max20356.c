@@ -219,6 +219,32 @@ int mfd_max20356_wdt_claim(const struct device *dev, bool claim)
 }
 #endif /* CONFIG_WDT_MAX20356 */
 
+/* Apply the devicetree-configured device-level register block (PwrCfg 0x82,
+ * MiscFunctions 0x84). Each entry only touches the fields whose property was
+ * present in the node; entries with an empty mask are skipped so the chip's OTP
+ * defaults are preserved.
+ */
+static int mfd_max20356_init_regs(const struct device *dev)
+{
+	const struct mfd_max20356_config *config = dev->config;
+	int ret;
+
+	for (uint8_t i = 0U; i < config->num_init_regs; i++) {
+		const struct mfd_max20356_init_reg *e = &config->init_regs[i];
+
+		if (e->mask == 0U) {
+			continue;
+		}
+
+		ret = mfd_max20356_reg_update(dev, e->reg, e->mask, e->val);
+		if (ret != 0) {
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
 static int mfd_max20356_init(const struct device *dev)
 {
 	const struct mfd_max20356_config *config = dev->config;
@@ -238,7 +264,10 @@ static int mfd_max20356_init(const struct device *dev)
 		return ret;
 	}
 
-
+	ret = mfd_max20356_init_regs(dev);
+	if (ret != 0) {
+		return ret;
+	}
 
 #ifdef CONFIG_MFD_MAX20356_TRIGGER
 	ret = mfd_max20356_trigger_init(dev);
@@ -250,12 +279,40 @@ static int mfd_max20356_init(const struct device *dev)
 	return 0;
 }
 
+/* Device-level init register block (PwrCfg 0x82, MiscFunctions 0x84). A boolean
+ * field contributes to its register's mask (so it is written) only when the
+ * property is present; otherwise the OTP default is kept.
+ */
+#define MFD_MAX20356_DT_BOOL(inst, prop, msk) (DT_INST_PROP(inst, prop) ? (uint8_t)(msk) : 0U)
+
+#define MFD_MAX20356_PWRCFG_BITS(inst)                                                              \
+	(MFD_MAX20356_DT_BOOL(inst, adi_intb_unmasked_in_shutdown,                                  \
+			      MAX20356_PWRCFG_INTBOOTMSK_MSK) |                                    \
+	 MFD_MAX20356_DT_BOOL(inst, adi_stay_on, MAX20356_PWRCFG_STAYON_MSK))
+
+#define MFD_MAX20356_MISCFUNC_BITS(inst)                                                           \
+	(MFD_MAX20356_DT_BOOL(inst, adi_active_discharge_constant,                                  \
+			      MAX20356_MISCFUNCTIONS_DISCHARGECONST_MSK) |                          \
+	 MFD_MAX20356_DT_BOOL(inst, adi_rtc_ldo_off, MAX20356_MISCFUNCTIONS_RTCLDOOFF_MSK) |        \
+	 MFD_MAX20356_DT_BOOL(inst, adi_factory_mode_disabled,                                      \
+			      MAX20356_MISCFUNCTIONS_FACTORYMODEDIS_MSK))
+
+#define MFD_MAX20356_INIT_ENTRY(regmac, bits) {(regmac), (bits), (bits)}
+
 #define MFD_MAX20356_DEFINE(inst, variant_id)                                                      \
+	static const struct mfd_max20356_init_reg mfd_max20356_init_regs_##variant_id##_##inst[] = {\
+		MFD_MAX20356_INIT_ENTRY(MAX20356_REG_PWRCFG, MFD_MAX20356_PWRCFG_BITS(inst)),      \
+		MFD_MAX20356_INIT_ENTRY(MAX20356_REG_MISCFUNCTIONS,                                \
+					MFD_MAX20356_MISCFUNC_BITS(inst)),                        \
+	};                                                                                         \
+                                                                                                   \
 	static struct mfd_max20356_data mfd_max20356_data_##variant_id##_##inst;                   \
                                                                                                    \
 	static const struct mfd_max20356_config mfd_max20356_config_##variant_id##_##inst = {      \
 		.i2c = I2C_DT_SPEC_INST_GET(inst),                                                 \
 		.variant = (variant_id),                                                           \
+		.init_regs = mfd_max20356_init_regs_##variant_id##_##inst,                         \
+		.num_init_regs = ARRAY_SIZE(mfd_max20356_init_regs_##variant_id##_##inst),         \
 		IF_ENABLED(CONFIG_MFD_MAX20356_TRIGGER,                                            \
 			   (.int_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, int_gpios, {0}),))          \
 	};                                                                                         \

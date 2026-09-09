@@ -8,6 +8,7 @@
 
 #include <zephyr/ztest.h>
 #include <zephyr/device.h>
+#include <zephyr/init.h>
 #include <zephyr/drivers/emul.h>
 #include <zephyr/drivers/mfd/max20356.h>
 
@@ -18,6 +19,28 @@
 #define PWRCMD_HARD_RESET 0xC3U
 #define PWRCMD_SOFT_RESET 0xD4U
 #define PWRCMD_SEAL       0xE5U
+
+/* Device-level init writes (PwrCfg, MiscFunctions) happen at MFD init, before
+ * ztest starts and before the per-test emulator reset. Snapshot them at boot so
+ * test_init_config() can assert against them. See test_init_config.
+ */
+static struct {
+	uint8_t pwrcfg;
+	uint8_t miscfunctions;
+} boot_snapshot;
+
+static int boot_snapshot_init(void)
+{
+	const struct emul *emul = EMUL_DT_GET(DT_NODELABEL(pmic));
+
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_PWRCFG, &boot_snapshot.pwrcfg);
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_MISCFUNCTIONS, &boot_snapshot.miscfunctions);
+
+	return 0;
+}
+
+/* APPLICATION level runs after POST_KERNEL device init, before ztest starts. */
+SYS_INIT(boot_snapshot_init, APPLICATION, 0);
 
 struct max20356_fixture {
 	const struct device *dev;
@@ -183,4 +206,26 @@ ZTEST(max20356, test_variant_max20358)
 
 	zassert_true(device_is_ready(dev), "max20358 device not ready");
 	zassert_equal(mfd_max20356_get_variant(dev), MAX20356_VARIANT_MAX20358);
+}
+
+/* The device-level init block writes only the fields whose properties are
+ * present in the overlay. The pmic node sets adi,intb-unmasked-in-shutdown,
+ * adi,rtc-ldo-off and adi,factory-mode-disabled; adi,stay-on and
+ * adi,active-discharge-constant are absent and must stay at 0.
+ */
+ZTEST(max20356, test_init_config)
+{
+	zassert_true((boot_snapshot.pwrcfg & MAX20356_PWRCFG_INTBOOTMSK_MSK) != 0U,
+		     "INTBootMsk not set: PwrCfg 0x%02x", boot_snapshot.pwrcfg);
+	zassert_true((boot_snapshot.pwrcfg & MAX20356_PWRCFG_STAYON_MSK) == 0U,
+		     "StayOn set but not requested: PwrCfg 0x%02x", boot_snapshot.pwrcfg);
+
+	zassert_true((boot_snapshot.miscfunctions & MAX20356_MISCFUNCTIONS_RTCLDOOFF_MSK) != 0U,
+		     "RTC-LDO-off not set: MiscFunctions 0x%02x", boot_snapshot.miscfunctions);
+	zassert_true((boot_snapshot.miscfunctions & MAX20356_MISCFUNCTIONS_FACTORYMODEDIS_MSK) != 0U,
+		     "factory-mode-disabled not set: MiscFunctions 0x%02x",
+		     boot_snapshot.miscfunctions);
+	zassert_true((boot_snapshot.miscfunctions & MAX20356_MISCFUNCTIONS_DISCHARGECONST_MSK) == 0U,
+		     "active-discharge-constant set but not requested: MiscFunctions 0x%02x",
+		     boot_snapshot.miscfunctions);
 }

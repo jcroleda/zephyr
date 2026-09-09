@@ -871,6 +871,9 @@
 /* MISCFUNCTIONS @ 0x84 */
 #define MAX20356_REG_MISCFUNCTIONS			0x84
 #define  MAX20356_MISCFUNCTIONS_MISCFUNC_MSK		GENMASK(3, 0)
+#define  MAX20356_MISCFUNCTIONS_DISCHARGECONST_MSK	BIT(0)
+#define  MAX20356_MISCFUNCTIONS_RTCLDOOFF_MSK		BIT(1)
+#define  MAX20356_MISCFUNCTIONS_FACTORYMODEDIS_MSK	BIT(2)
 
 /* LOCKMSK1 @ 0x86 */
 #define MAX20356_REG_LOCKMSK1				0x86
@@ -929,9 +932,21 @@
 #include <zephyr/drivers/gpio.h>
 #endif
 
+/* One device-level init register write. A field contributes to @mask only when
+ * its devicetree property is present, so entries with mask == 0 are skipped and
+ * the chip's OTP defaults are preserved.
+ */
+struct mfd_max20356_init_reg {
+	uint8_t reg;
+	uint8_t mask;
+	uint8_t val;
+};
+
 struct mfd_max20356_config {
 	struct i2c_dt_spec i2c;
 	enum max20356_variant variant;
+	const struct mfd_max20356_init_reg *init_regs;
+	uint8_t num_init_regs;
 #ifdef CONFIG_MFD_MAX20356_TRIGGER
 	struct gpio_dt_spec int_gpio;
 #endif

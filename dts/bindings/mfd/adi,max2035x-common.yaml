@@ -33,3 +33,38 @@ properties:
       SPI controller wired to MPC0/MPC1/MPC2 (CS/SCLK/DIN) for SPI dynamic
       voltage scaling (DVS Mode 2). Required only when a buck child selects
       adi,dvs-mode = "spi".
+
+  adi,intb-unmasked-in-shutdown:
+    type: boolean
+    description: |
+      Leave INTB unmasked during shutdown (PwrCfg.INTBootMsk = 1). When absent
+      INTB is masked during shutdown (OTP default), which prevents the INTB line
+      from locking up the application processor while the PMIC powers down.
+
+  adi,stay-on:
+    type: boolean
+    description: |
+      Set PwrCfg.StayOn at init to keep the part powered on (StayOn = 1). The
+      hardware requires this within 5s of power-on or it shuts down and returns
+      to the power-off condition; the bit has no effect once already set. Only
+      set this when the driver, rather than the application, owns the keep-alive
+      handshake.
+
+  adi,active-discharge-constant:
+    type: boolean
+    description: |
+      Discharge a disabled block's output constantly rather than for 50ms
+      (MiscFunctions.MiscFunc[0] = 1). When absent the OTP default (50ms pulse)
+      is kept. Only applies to blocks that have active discharge enabled.
+
+  adi,rtc-ldo-off:
+    type: boolean
+    description: |
+      Turn the RTC-LDO feature off (MiscFunctions.MiscFunc[1] = 1). When absent
+      the OTP default (RTC-LDO on) is kept.
+
+  adi,factory-mode-disabled:
+    type: boolean
+    description: |
+      Disable factory mode (MiscFunctions.MiscFunc[2] = 1). When absent the OTP
+      default (factory mode enabled) is kept.
