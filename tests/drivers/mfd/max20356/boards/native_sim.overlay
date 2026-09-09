@@ -50,6 +50,15 @@
 		regulators {
 			compatible = "adi,max20356-regulator";
 
+			/* MPC enable routing: MPC6 -> LSW1, MPC7 -> BUCK3. Pins
+			 * 0..2 (SPI DVS) and 3/5 (buck2 GPIO DVS pair) are left
+			 * unrouted to avoid colliding with the DVS tests.
+			 */
+			adi,mpc-enable-rails =
+				<MAX20356_MPC_NONE MAX20356_MPC_NONE MAX20356_MPC_NONE
+				 MAX20356_MPC_NONE MAX20356_MPC_NONE MAX20356_MPC_NONE
+				 MAX20356_MPC_LSW1 MAX20356_MPC_BUCK3>;
+
 			reg_buck1: buck1 {
 				adi,buck-voltage-step-microvolt = <25000>;
 				regulator-min-microvolt = <500000>;

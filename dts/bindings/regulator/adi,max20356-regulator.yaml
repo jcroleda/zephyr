@@ -18,9 +18,30 @@ description: |
   regulator-initial-mode using the MAX20356_MODE_* macros from
   <zephyr/dt-bindings/mfd/max20356.h>.
 
+  Any of the eight multi-purpose control pins (MPC0..MPC7) can be routed to
+  enable-control a rail through the adi,mpc-enable-rails property. A routed pin
+  sets the rail's <rail>Ctr bit and puts its enable into "controlled by MPC" mode;
+  the rail must also be in sequencing slot 7 (adi,sequence-slot = <7>) for the
+  routing to take effect. Such pins must not also be claimed by the GPIO child.
+
 compatible: "adi,max20356-regulator"
 
 include: base.yaml
+
+properties:
+  adi,mpc-enable-rails:
+    type: array
+    description: |
+      Routes each multi-purpose control pin (MPC0..MPC7) to the regulator rail it
+      enable-controls. Eight cells; the cell index is the MPC pin number and the
+      cell value is a MAX20356_MPC_* selector from
+      <zephyr/dt-bindings/mfd/max20356.h> (MAX20356_MPC_NONE leaves the pin
+      unrouted). A pin routed to a rail sets that rail's <rail>Ctr.<rail>MPC<pin>
+      bit and puts the rail's enable field into "controlled by MPC" mode
+      (<rail>En = 10); the rail must also be in sequencing slot 7
+      (adi,sequence-slot = <7>) for the routing to take effect in hardware. Pins
+      routed here must not also be claimed by the GPIO child or used for GPIO/SPI
+      DVS.
 
 child-binding:
   include:

@@ -35,6 +35,11 @@ static struct {
 	uint8_t ldo3ena;
 	uint8_t ldo3cfg;
 	uint8_t lsw1cfg;
+	uint8_t buck1ctr;
+	uint8_t buck3ctr;
+	uint8_t buck3ena;
+	uint8_t lsw1ctr;
+	uint8_t lsw1ena;
 } boot_snapshot;
 
 static int boot_snapshot_init(void)
@@ -50,6 +55,11 @@ static int boot_snapshot_init(void)
 	mfd_max20356_emul_get_reg(emul, MAX20356_REG_LDO3ENA, &boot_snapshot.ldo3ena);
 	mfd_max20356_emul_get_reg(emul, MAX20356_REG_LDO3CFG, &boot_snapshot.ldo3cfg);
 	mfd_max20356_emul_get_reg(emul, MAX20356_REG_LSW1CFG, &boot_snapshot.lsw1cfg);
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_BUCK1CTR, &boot_snapshot.buck1ctr);
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_BUCK3CTR, &boot_snapshot.buck3ctr);
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_BUCK3ENA, &boot_snapshot.buck3ena);
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_LSW1CTR, &boot_snapshot.lsw1ctr);
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_LSW1ENA, &boot_snapshot.lsw1ena);
 
 	return 0;
 }
@@ -394,4 +404,29 @@ ZTEST(max20356_reg, test_init_config)
 	/* LSW1: non-lockable rail, LowIq set through the plain update path. */
 	zassert_true((boot_snapshot.lsw1cfg & MAX20356_LSW1CFG_LSW1LOWIQ_MSK) != 0U,
 		     "lsw1 LowIq not set");
+}
+
+/* adi,mpc-enable-map routes MPC6 -> LSW1 and MPC7 -> BUCK3: each routed rail
+ * gets exactly its pin's <rail>Ctr bit and its enable field set to controlled-by-
+ * MPC (En = 10). An unrouted rail (buck1) keeps a zero Ctr and is not forced into
+ * MPC mode. Uses the boot snapshot (these are init-time writes).
+ */
+ZTEST(max20356_reg, test_mpc_enable_map)
+{
+	/* LSW1 (non-lockable path): only MPC6 routed, enable = controlled-by-MPC. */
+	zassert_equal(boot_snapshot.lsw1ctr, BIT(6), "lsw1 Ctr = 0x%02x", boot_snapshot.lsw1ctr);
+	zassert_equal(FIELD_GET(MAX20356_LSW1ENA_LSW1EN_MSK, boot_snapshot.lsw1ena), 0x2,
+		      "lsw1 En not controlled-by-MPC (= %u)",
+		      FIELD_GET(MAX20356_LSW1ENA_LSW1EN_MSK, boot_snapshot.lsw1ena));
+
+	/* BUCK3 (lockable path): only MPC7 routed, enable = controlled-by-MPC. */
+	zassert_equal(boot_snapshot.buck3ctr, BIT(7), "buck3 Ctr = 0x%02x", boot_snapshot.buck3ctr);
+	zassert_equal(FIELD_GET(MAX20356_BUCK3ENA_BUCK3EN_MSK, boot_snapshot.buck3ena), 0x2,
+		      "buck3 En not controlled-by-MPC (= %u)",
+		      FIELD_GET(MAX20356_BUCK3ENA_BUCK3EN_MSK, boot_snapshot.buck3ena));
+
+	/* buck1 is unrouted: no Ctr bit, enable field left alone (still disabled). */
+	zassert_equal(boot_snapshot.buck1ctr, 0, "buck1 Ctr written but unrouted");
+	zassert_equal(FIELD_GET(MAX20356_BUCK1ENA_BUCK1EN_MSK, boot_snapshot.buck1ena), 0,
+		      "buck1 En forced but unrouted");
 }
