@@ -74,6 +74,16 @@ static const int32_t ldo4_voltages[] = {
 static const struct linear_range __maybe_unused iset_ua_range =
 	LINEAR_RANGE_INIT(0, 25000U, 0x00U, 0x0FU);
 
+/* One masked register write applied at init from devicetree. Only fields with a
+ * property present in the node contribute to @mask, so a register with no
+ * configured field has @mask == 0 and is skipped (its OTP default is kept).
+ */
+struct regulator_max20356_init_reg {
+	uint8_t reg;
+	uint8_t mask;
+	uint8_t val;
+};
+
 struct regulator_max20356_desc {
 	uint8_t ena_reg;
 	uint8_t ena_mask;
@@ -100,6 +110,8 @@ struct regulator_max20356_config {
 	const struct device *mfd_dev;
 	const struct regulator_max20356_desc *desc;
 	const struct linear_range *uv_range;
+	const struct regulator_max20356_init_reg *init_regs;
+	uint8_t num_init_regs;
 	struct spi_dt_spec dvs_spi;
 	uint32_t dvs_voltages[4];
 	uint32_t dvs_valley_ua;
@@ -532,6 +544,34 @@ static int regulator_max20356_dvs_init(const struct device *dev)
 					      cfg);
 }
 
+/* Apply the devicetree-configured register block (0x30..0x71). Each entry only
+ * touches the fields whose property was present in the node; entries with an
+ * empty mask are skipped so the chip's OTP defaults are preserved. The write
+ * routes through regulator_max20356_reg_update(), so lockable rails get the
+ * password sequence and load switches a plain update.
+ */
+static int regulator_max20356_init_regs(const struct device *dev)
+{
+	const struct regulator_max20356_config *config = dev->config;
+	int ret;
+
+	for (uint8_t i = 0U; i < config->num_init_regs; i++) {
+		const struct regulator_max20356_init_reg *e = &config->init_regs[i];
+
+		if (e->mask == 0U) {
+			continue;
+		}
+
+		ret = regulator_max20356_reg_update(dev, e->reg, e->mask, e->val);
+		if (ret != 0) {
+			LOG_ERR("Failed to init reg 0x%02x: %d", e->reg, ret);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
 static int regulator_max20356_init(const struct device *dev)
 {
 	const struct regulator_max20356_config *config = dev->config;
@@ -543,6 +583,17 @@ static int regulator_max20356_init(const struct device *dev)
 	}
 
 	regulator_common_data_init(dev);
+
+	/* Apply the DT-configured register block before the rail is brought up
+	 * and before DVS init. The DvsIpMax bit lives in the same DvsCfg0
+	 * register that regulator_max20356_dvs_init() programs; both are masked
+	 * updates on disjoint bits, so applying this block first leaves the DVS
+	 * fields for dvs_init to set without clobbering DvsIpMax.
+	 */
+	ret = regulator_max20356_init_regs(dev);
+	if (ret != 0) {
+		return ret;
+	}
 
 	if (config->desc->is_buck) {
 		ret = regulator_max20356_dvs_init(dev);
@@ -607,6 +658,183 @@ static DEVICE_API(regulator, api) = {
 	.set_current_limit = regulator_max20356_set_current_limit,
 	.get_current_limit = regulator_max20356_get_current_limit,
 };
+
+/* Devicetree field-contribution helpers for the init register block. A field
+ * contributes to a register's mask (and is therefore written) only when its
+ * property is present in the node; otherwise the OTP default is kept. These
+ * operate on a child node_id (the regulator DEFINE macros work on node_id, not
+ * DT_INST). Booleans use DT_PROP so an absent or false property contributes
+ * nothing; enum presence uses DT_NODE_HAS_PROP because an enum value of 0 is a
+ * valid code that must still be written. Enum lists in the binding are in
+ * register-code order, so DT_ENUM_IDX yields the raw field value directly.
+ */
+#define MAX20356_DT_BOOL_N(node_id, prop, msk) (DT_PROP(node_id, prop) ? (uint8_t)(msk) : 0U)
+#define MAX20356_DT_ENUM_M_N(node_id, prop, msk)                                                    \
+	(DT_NODE_HAS_PROP(node_id, prop) ? (uint8_t)(msk) : 0U)
+#define MAX20356_DT_ENUM_V_N(node_id, prop, msk)                                                    \
+	((uint8_t)FIELD_PREP(msk, DT_ENUM_IDX_OR(node_id, prop, 0)))
+
+#define MAX20356_REG_ENTRY(regmac, m_expr, v_expr) {(regmac), (m_expr), (v_expr)}
+
+/* Sequencing slot entry: masked update on <rail>Ena[7:5], leaving En[1:0]. */
+#define MAX20356_SEQ_ENTRY(ena_reg, seq_msk, node_id)                                              \
+	MAX20356_REG_ENTRY(ena_reg,                                                                 \
+			   MAX20356_DT_ENUM_M_N(node_id, adi_sequence_slot, seq_msk),               \
+			   MAX20356_DT_ENUM_V_N(node_id, adi_sequence_slot, seq_msk))
+
+/* Buck Cfg0 bits. cfg_reg_id resolves the CFG0 register-token inconsistency
+ * (BUCK1CFG0 vs BUCK2CFG/BUCK3CFG); CFG1/ISET/DVSCFG0/ENA tokens are regular
+ * and build from n. ActDsc is excluded (owned by set_active_discharge()).
+ */
+#define MAX20356_BUCK_CFG0_BITS(n, cfg_reg_id, node_id)                                             \
+	(MAX20356_DT_BOOL_N(node_id, adi_buck_enb_integrator,                                       \
+			    MAX20356_##cfg_reg_id##_BUCK##n##ENBINTGR_MSK) |                        \
+	 MAX20356_DT_BOOL_N(node_id, adi_buck_pgood_enable,                                         \
+			    MAX20356_##cfg_reg_id##_BUCK##n##PGOODENA_MSK) |                        \
+	 MAX20356_DT_BOOL_N(node_id, adi_buck_fast, MAX20356_##cfg_reg_id##_BUCK##n##FAST_MSK) |    \
+	 MAX20356_DT_BOOL_N(node_id, adi_buck_passive_discharge,                                    \
+			    MAX20356_##cfg_reg_id##_BUCK##n##PSVDSC_MSK) |                          \
+	 MAX20356_DT_BOOL_N(node_id, adi_buck_low_emi,                                              \
+			    MAX20356_##cfg_reg_id##_BUCK##n##LOWEMI_MSK) |                          \
+	 MAX20356_DT_BOOL_N(node_id, adi_buck_force_fet_scaling,                                    \
+			    MAX20356_##cfg_reg_id##_BUCK##n##FET_MSK) |                             \
+	 MAX20356_DT_BOOL_N(node_id, adi_buck_enable_lx_sense,                                      \
+			    MAX20356_##cfg_reg_id##_BUCK##n##ENLXSNS_MSK))
+
+#define MAX20356_BUCK_CFG1_BITS(n, node_id)                                                         \
+	(MAX20356_DT_BOOL_N(node_id, adi_buck_low_bandwidth,                                        \
+			    MAX20356_BUCK##n##CFG1_BUCK##n##LOWBW_MSK) |                            \
+	 MAX20356_DT_BOOL_N(node_id, adi_buck_force_dcm,                                            \
+			    MAX20356_BUCK##n##CFG1_BUCK##n##FRCDCM_MSK) |                           \
+	 MAX20356_DT_BOOL_N(node_id, adi_buck_mpc2_fast,                                            \
+			    MAX20356_BUCK##n##CFG1_BUCK##n##MPCFAST_MSK) |                          \
+	 MAX20356_DT_BOOL_N(node_id, adi_buck_forced_pwm,                                           \
+			    MAX20356_BUCK##n##CFG1_BUCK##n##FPWM_MSK) |                             \
+	 MAX20356_DT_BOOL_N(node_id, adi_buck_enb_adaptive_peak,                                    \
+			    MAX20356_BUCK##n##CFG1_BUCK##n##ENBIADPT_MSK))
+
+#define MAX20356_BUCK_INIT_REGS(id, n, cfg_reg_id, node_id)                                         \
+	static const struct regulator_max20356_init_reg regulator_max20356_init_regs_##id[] = {     \
+		MAX20356_SEQ_ENTRY(MAX20356_REG_BUCK##n##ENA,                                       \
+				   MAX20356_BUCK##n##ENA_BUCK##n##SEQ_MSK, node_id),                \
+		MAX20356_REG_ENTRY(MAX20356_REG_##cfg_reg_id,                                       \
+				   MAX20356_BUCK_CFG0_BITS(n, cfg_reg_id, node_id),                 \
+				   MAX20356_BUCK_CFG0_BITS(n, cfg_reg_id, node_id)),               \
+		MAX20356_REG_ENTRY(MAX20356_REG_BUCK##n##CFG1,                                      \
+				   MAX20356_BUCK_CFG1_BITS(n, node_id),                             \
+				   MAX20356_BUCK_CFG1_BITS(n, node_id)),                           \
+		MAX20356_REG_ENTRY(MAX20356_REG_BUCK##n##ISET,                                      \
+				   MAX20356_DT_BOOL_N(node_id, adi_buck_iset_lookup_disable,        \
+						      MAX20356_BUCK##n##ISET_BUCK##n##ISETLOOKUPB_MSK), \
+				   MAX20356_DT_BOOL_N(node_id, adi_buck_iset_lookup_disable,        \
+						      MAX20356_BUCK##n##ISET_BUCK##n##ISETLOOKUPB_MSK)), \
+		MAX20356_REG_ENTRY(MAX20356_REG_BUCK##n##DVSCFG0,                                   \
+				   MAX20356_DT_BOOL_N(node_id, adi_buck_dvs_ipmax,                  \
+						      MAX20356_BUCK##n##DVSCFG0_BUCK##n##DVSIPMAX_MSK), \
+				   MAX20356_DT_BOOL_N(node_id, adi_buck_dvs_ipmax,                  \
+						      MAX20356_BUCK##n##DVSCFG0_BUCK##n##DVSIPMAX_MSK)), \
+	}
+
+#define MAX20356_BBST_CFG_BITS(node_id)                                                            \
+	(MAX20356_DT_BOOL_N(node_id, adi_bbst_ipset_lookup_disable,                                 \
+			    MAX20356_BBSTCFG_BBSTIPSETLOOKUPB_MSK) |                                \
+	 MAX20356_DT_BOOL_N(node_id, adi_bbst_low_emi, MAX20356_BBSTCFG_BBSTLOWEMI_MSK) |           \
+	 MAX20356_DT_BOOL_N(node_id, adi_bbst_ramp_enable, MAX20356_BBSTCFG_BBSTRAMPENA_MSK) |      \
+	 MAX20356_DT_BOOL_N(node_id, adi_bbst_mode, MAX20356_BBSTCFG_BBSTMODE_MSK) |                \
+	 MAX20356_DT_BOOL_N(node_id, adi_bbst_passive_discharge,                                    \
+			    MAX20356_BBSTCFG_BBSTPSVDISC_MSK))
+
+#define MAX20356_BBST_CFG1_BOOLS(node_id)                                                          \
+	(MAX20356_DT_BOOL_N(node_id, adi_bbst_ippad_adaptive_enable,                                \
+			    MAX20356_BBSTCFG1_BBSTIPPADPENB_MSK) |                                  \
+	 MAX20356_DT_BOOL_N(node_id, adi_bbst_fast, MAX20356_BBSTCFG1_BBSTFAST_MSK) |               \
+	 MAX20356_DT_BOOL_N(node_id, adi_bbst_zero_cross_comp_disable,                              \
+			    MAX20356_BBSTCFG1_BBZCCMPENB_MSK) |                                     \
+	 MAX20356_DT_BOOL_N(node_id, adi_bbst_force_fet_scaling, MAX20356_BBSTCFG1_BBSTFFET_MSK) |  \
+	 MAX20356_DT_BOOL_N(node_id, adi_bbst_mpc1_fast, MAX20356_BBSTCFG1_BBSTMPC1FCT_MSK))
+
+#define MAX20356_BBST_INIT_REGS(id, node_id)                                                       \
+	static const struct regulator_max20356_init_reg regulator_max20356_init_regs_##id[] = {     \
+		MAX20356_SEQ_ENTRY(MAX20356_REG_BBSTENA, MAX20356_BBSTENA_BBSTSEQ_MSK, node_id),    \
+		MAX20356_REG_ENTRY(MAX20356_REG_BBSTCFG, MAX20356_BBST_CFG_BITS(node_id),           \
+				   MAX20356_BBST_CFG_BITS(node_id)),                               \
+		MAX20356_REG_ENTRY(MAX20356_REG_BBSTCFG1,                                           \
+				   (MAX20356_BBST_CFG1_BOOLS(node_id) |                            \
+				    MAX20356_DT_ENUM_M_N(node_id, adi_bbst_fhigh_threshold,        \
+							 MAX20356_BBSTCFG1_BBFHIGHSH_MSK)),        \
+				   (MAX20356_BBST_CFG1_BOOLS(node_id) |                            \
+				    MAX20356_DT_ENUM_V_N(node_id, adi_bbst_fhigh_threshold,        \
+							 MAX20356_BBSTCFG1_BBFHIGHSH_MSK))),       \
+	}
+
+#define MAX20356_LDO1_CFG_BITS(node_id)                                                            \
+	(MAX20356_DT_BOOL_N(node_id, adi_ldo1_internal_supply,                                      \
+			    MAX20356_LDO1CFG_LDO1INTSUP_MSK) |                                      \
+	 MAX20356_DT_BOOL_N(node_id, adi_ldo1_passive_discharge,                                    \
+			    MAX20356_LDO1CFG_LDO1PSVDSC_MSK))
+
+#define MAX20356_LDO2_CFG_BITS(node_id)                                                            \
+	(MAX20356_DT_BOOL_N(node_id, adi_ldo2_mpc0_config, MAX20356_LDO2CFG_LDO2_MPC0CNF_MSK) |     \
+	 MAX20356_DT_BOOL_N(node_id, adi_ldo2_mpc0_control, MAX20356_LDO2CFG_LDO2_MPC0CNT_MSK) |    \
+	 MAX20356_DT_BOOL_N(node_id, adi_ldo2_passive_discharge,                                    \
+			    MAX20356_LDO2CFG_LDO2PSVDSC_MSK))
+
+#define MAX20356_LDO3_CFG_BITS(node_id)                                                            \
+	(MAX20356_DT_BOOL_N(node_id, adi_ldo3_mpc_config, MAX20356_LDO3CFG_LDO3_MPC_CNF_MSK) |      \
+	 MAX20356_DT_BOOL_N(node_id, adi_ldo3_no_clip_protection,                                   \
+			    MAX20356_LDO3CFG_LDO3_NOCLP_MSK) |                                      \
+	 MAX20356_DT_BOOL_N(node_id, adi_ldo3_high_current_cout,                                    \
+			    MAX20356_LDO3CFG_LDO3_HICOUT_MSK) |                                     \
+	 MAX20356_DT_BOOL_N(node_id, adi_ldo3_force_high_current,                                   \
+			    MAX20356_LDO3CFG_LDO3_FRC_HIC_MSK) |                                    \
+	 MAX20356_DT_BOOL_N(node_id, adi_ldo3_proportional_mode,                                    \
+			    MAX20356_LDO3CFG_LDO3_PMOD_MSK) |                                       \
+	 MAX20356_DT_BOOL_N(node_id, adi_ldo3_passive_discharge,                                    \
+			    MAX20356_LDO3CFG_LDO3PSVDSC_MSK))
+
+#define MAX20356_LDO1_INIT_REGS(id, node_id)                                                       \
+	static const struct regulator_max20356_init_reg regulator_max20356_init_regs_##id[] = {     \
+		MAX20356_SEQ_ENTRY(MAX20356_REG_LDO1ENA, MAX20356_LDO1ENA_LDO1SEQ_MSK, node_id),    \
+		MAX20356_REG_ENTRY(MAX20356_REG_LDO1CFG, MAX20356_LDO1_CFG_BITS(node_id),           \
+				   MAX20356_LDO1_CFG_BITS(node_id)),                               \
+	}
+
+#define MAX20356_LDO2_INIT_REGS(id, node_id)                                                       \
+	static const struct regulator_max20356_init_reg regulator_max20356_init_regs_##id[] = {     \
+		MAX20356_SEQ_ENTRY(MAX20356_REG_LDO2ENA, MAX20356_LDO2ENA_LDO2SEQ_MSK, node_id),    \
+		MAX20356_REG_ENTRY(MAX20356_REG_LDO2CFG, MAX20356_LDO2_CFG_BITS(node_id),           \
+				   MAX20356_LDO2_CFG_BITS(node_id)),                               \
+	}
+
+#define MAX20356_LDO3_INIT_REGS(id, node_id)                                                       \
+	static const struct regulator_max20356_init_reg regulator_max20356_init_regs_##id[] = {     \
+		MAX20356_SEQ_ENTRY(MAX20356_REG_LDO3ENA, MAX20356_LDO3ENA_LDO3SEQ_MSK, node_id),    \
+		MAX20356_REG_ENTRY(MAX20356_REG_LDO3CFG, MAX20356_LDO3_CFG_BITS(node_id),           \
+				   MAX20356_LDO3_CFG_BITS(node_id)),                               \
+	}
+
+#define MAX20356_LDO4_INIT_REGS(id, node_id)                                                       \
+	static const struct regulator_max20356_init_reg regulator_max20356_init_regs_##id[] = {     \
+		MAX20356_SEQ_ENTRY(MAX20356_REG_LDO4ENA, MAX20356_LDO4ENA_LDO4SEQ_MSK, node_id),    \
+		MAX20356_REG_ENTRY(MAX20356_REG_LDO4CFG,                                            \
+				   MAX20356_DT_BOOL_N(node_id, adi_ldo4_passive_discharge,         \
+						      MAX20356_LDO4CFG_LDO4PSVDSC_MSK),            \
+				   MAX20356_DT_BOOL_N(node_id, adi_ldo4_passive_discharge,         \
+						      MAX20356_LDO4CFG_LDO4PSVDSC_MSK)),           \
+	}
+
+#define MAX20356_LSW_CFG_BITS(n, node_id)                                                          \
+	(MAX20356_DT_BOOL_N(node_id, adi_lsw_low_iq, MAX20356_LSW##n##CFG_LSW##n##LOWIQ_MSK) |      \
+	 MAX20356_DT_BOOL_N(node_id, adi_lsw_passive_discharge,                                     \
+			    MAX20356_LSW##n##CFG_LSW##n##PSVDSC_MSK))
+
+#define MAX20356_LSW_INIT_REGS(id, n, node_id)                                                     \
+	static const struct regulator_max20356_init_reg regulator_max20356_init_regs_##id[] = {     \
+		MAX20356_SEQ_ENTRY(MAX20356_REG_LSW##n##ENA,                                        \
+				   MAX20356_LSW##n##ENA_LSW##n##SEQ_MSK, node_id),                  \
+		MAX20356_REG_ENTRY(MAX20356_REG_LSW##n##CFG, MAX20356_LSW_CFG_BITS(n, node_id),     \
+				   MAX20356_LSW_CFG_BITS(n, node_id)),                             \
+	}
 
 #define MAX20356_BUCK_DESC(n, cfg_reg_id)                                                          \
 	static const struct regulator_max20356_desc __maybe_unused buck##n##_desc = {              \
@@ -707,19 +935,23 @@ MAX20356_LSW_DESC(3);
 		    (.dvs_spi = SPI_DT_SPEC_GET(DT_PHANDLE(node_id, adi_dvs_spi),                  \
 						SPI_WORD_SET(8) | SPI_TRANSFER_MSB),), ())
 
-#define REGULATOR_MAX20356_DEFINE(node_id, id, _desc, _range)                                      \
-	static const struct regulator_max20356_config regulator_max20356_config_##id = {          \
-		.common = REGULATOR_DT_COMMON_CONFIG_INIT(node_id),                               \
-		.mfd_dev = DEVICE_DT_GET(DT_GPARENT(node_id)),                                    \
-		.desc = &(_desc),                                                                 \
-		.uv_range = (_range),                                                             \
-		.ldo4_rtc = DT_PROP_OR(node_id, adi_ldo4_always_on_off_on_pfn1, 0),               \
-		.dvs_mode = DT_ENUM_IDX_OR(node_id, adi_dvs_mode, MAX20356_DVS_MODE_I2C),          \
-		.dvs_mpc_pair = DT_PROP_OR(node_id, adi_dvs_mpc_pair, {0}),                        \
-		.dvs_mpc_pair_len = DT_PROP_LEN_OR(node_id, adi_dvs_mpc_pair, 0),                  \
-		.dvs_voltages = DT_PROP_OR(node_id, adi_dvs_voltages, {0}),                        \
-		.dvs_valley_ua = DT_PROP_OR(node_id, adi_dvs_valley_current_microamp, 500000),     \
-		MAX20356_DVS_SPI_INIT(node_id)                                                     \
+#define REGULATOR_MAX20356_DEFINE(node_id, id, _desc, _range, _regs)                               \
+	_regs;                                                                                      \
+                                                                                                   \
+	static const struct regulator_max20356_config regulator_max20356_config_##id = {           \
+		.common = REGULATOR_DT_COMMON_CONFIG_INIT(node_id),                                 \
+		.mfd_dev = DEVICE_DT_GET(DT_GPARENT(node_id)),                                      \
+		.desc = &(_desc),                                                                   \
+		.uv_range = (_range),                                                               \
+		.init_regs = regulator_max20356_init_regs_##id,                                     \
+		.num_init_regs = ARRAY_SIZE(regulator_max20356_init_regs_##id),                     \
+		.ldo4_rtc = DT_PROP_OR(node_id, adi_ldo4_always_on_off_on_pfn1, 0),                 \
+		.dvs_mode = DT_ENUM_IDX_OR(node_id, adi_dvs_mode, MAX20356_DVS_MODE_I2C),            \
+		.dvs_mpc_pair = DT_PROP_OR(node_id, adi_dvs_mpc_pair, {0}),                          \
+		.dvs_mpc_pair_len = DT_PROP_LEN_OR(node_id, adi_dvs_mpc_pair, 0),                    \
+		.dvs_voltages = DT_PROP_OR(node_id, adi_dvs_voltages, {0}),                          \
+		.dvs_valley_ua = DT_PROP_OR(node_id, adi_dvs_valley_current_microamp, 500000),       \
+		MAX20356_DVS_SPI_INIT(node_id)                                                       \
 	};                                                                                         \
                                                                                                    \
 	static struct regulator_max20356_data regulator_max20356_data_##id;                        \
@@ -727,16 +959,32 @@ MAX20356_LSW_DESC(3);
 			 &regulator_max20356_config_##id, POST_KERNEL,                            \
 			 CONFIG_REGULATOR_MAX20356_INIT_PRIORITY, &api);
 
-#define REGULATOR_MAX20356_DEFINE_COND(inst, child, desc, range)                                   \
+/* COND rails whose init-table builder takes (id, node_id): buck-boost, LDOs. */
+#define REGULATOR_MAX20356_DEFINE_COND(inst, child, desc, range, regs_builder)                     \
 	COND_CODE_1(DT_NODE_EXISTS(DT_INST_CHILD(inst, child)),                                    \
 		    (REGULATOR_MAX20356_DEFINE(DT_INST_CHILD(inst, child), child##inst, desc,      \
-					       range)),                                            \
+					       range,                                              \
+					       regs_builder(child##inst,                          \
+							    DT_INST_CHILD(inst, child)))),         \
 		    ())
 
-#define REGULATOR_MAX20356_DEFINE_BUCK(inst, child, desc)                                          \
+/* Bucks: builder takes (id, n, cfg_reg_id, node_id) and the range is derived. */
+#define REGULATOR_MAX20356_DEFINE_BUCK(inst, child, desc, n, cfg_reg_id)                           \
 	COND_CODE_1(DT_NODE_EXISTS(DT_INST_CHILD(inst, child)),                                    \
 		    (REGULATOR_MAX20356_DEFINE(DT_INST_CHILD(inst, child), child##inst, desc,      \
-					       MAX20356_BUCK_RANGE(DT_INST_CHILD(inst, child)))),  \
+					       MAX20356_BUCK_RANGE(DT_INST_CHILD(inst, child)),   \
+					       MAX20356_BUCK_INIT_REGS(child##inst, n, cfg_reg_id,\
+								       DT_INST_CHILD(inst,        \
+										     child)))),   \
+		    ())
+
+/* Load switches: builder takes (id, n, node_id); no voltage range. */
+#define REGULATOR_MAX20356_DEFINE_LSW(inst, child, desc, n)                                        \
+	COND_CODE_1(DT_NODE_EXISTS(DT_INST_CHILD(inst, child)),                                    \
+		    (REGULATOR_MAX20356_DEFINE(DT_INST_CHILD(inst, child), child##inst, desc, NULL,\
+					       MAX20356_LSW_INIT_REGS(child##inst, n,             \
+								      DT_INST_CHILD(inst,         \
+										    child)))),    \
 		    ())
 
 #define REGULATOR_MAX20356_DEFINE_ALL(inst)                                                        \
@@ -748,16 +996,20 @@ MAX20356_LSW_DESC(3);
 			      &common_config_##inst, POST_KERNEL,                                 \
 			      CONFIG_REGULATOR_MAX20356_COMMON_INIT_PRIORITY, &parent_api);        \
                                                                                                    \
-	REGULATOR_MAX20356_DEFINE_BUCK(inst, buck1, buck1_desc)                                    \
-	REGULATOR_MAX20356_DEFINE_BUCK(inst, buck2, buck2_desc)                                    \
-	REGULATOR_MAX20356_DEFINE_BUCK(inst, buck3, buck3_desc)                                    \
-	REGULATOR_MAX20356_DEFINE_COND(inst, buckboost, bbst_desc, &bbst_range)                    \
-	REGULATOR_MAX20356_DEFINE_COND(inst, ldo1, ldo1_desc, &ldo1_2_range)                       \
-	REGULATOR_MAX20356_DEFINE_COND(inst, ldo2, ldo2_desc, &ldo1_2_range)                       \
-	REGULATOR_MAX20356_DEFINE_COND(inst, ldo3, ldo3_desc, &ldo3_range)                         \
-	REGULATOR_MAX20356_DEFINE_COND(inst, ldo4, ldo4_desc, NULL)                                \
-	REGULATOR_MAX20356_DEFINE_COND(inst, lsw1, lsw1_desc, NULL)                                \
-	REGULATOR_MAX20356_DEFINE_COND(inst, lsw2, lsw2_desc, NULL)                                \
-	REGULATOR_MAX20356_DEFINE_COND(inst, lsw3, lsw3_desc, NULL)
+	REGULATOR_MAX20356_DEFINE_BUCK(inst, buck1, buck1_desc, 1, BUCK1CFG0)                      \
+	REGULATOR_MAX20356_DEFINE_BUCK(inst, buck2, buck2_desc, 2, BUCK2CFG)                       \
+	REGULATOR_MAX20356_DEFINE_BUCK(inst, buck3, buck3_desc, 3, BUCK3CFG)                       \
+	REGULATOR_MAX20356_DEFINE_COND(inst, buckboost, bbst_desc, &bbst_range,                    \
+				       MAX20356_BBST_INIT_REGS)                                    \
+	REGULATOR_MAX20356_DEFINE_COND(inst, ldo1, ldo1_desc, &ldo1_2_range,                       \
+				       MAX20356_LDO1_INIT_REGS)                                    \
+	REGULATOR_MAX20356_DEFINE_COND(inst, ldo2, ldo2_desc, &ldo1_2_range,                       \
+				       MAX20356_LDO2_INIT_REGS)                                    \
+	REGULATOR_MAX20356_DEFINE_COND(inst, ldo3, ldo3_desc, &ldo3_range,                         \
+				       MAX20356_LDO3_INIT_REGS)                                    \
+	REGULATOR_MAX20356_DEFINE_COND(inst, ldo4, ldo4_desc, NULL, MAX20356_LDO4_INIT_REGS)       \
+	REGULATOR_MAX20356_DEFINE_LSW(inst, lsw1, lsw1_desc, 1)                                    \
+	REGULATOR_MAX20356_DEFINE_LSW(inst, lsw2, lsw2_desc, 2)                                    \
+	REGULATOR_MAX20356_DEFINE_LSW(inst, lsw3, lsw3_desc, 3)
 
 DT_INST_FOREACH_STATUS_OKAY(REGULATOR_MAX20356_DEFINE_ALL)

@@ -14,11 +14,47 @@
 #include <zephyr/drivers/emul.h>
 #include <zephyr/drivers/regulator.h>
 #include <zephyr/dt-bindings/mfd/max20356.h>
+#include <zephyr/init.h>
 #include <zephyr/sys/util.h>
 
 #include "mfd_max20356.h"
 #include "mfd_max20356_emul.h"
 #include "spi_dvs_emul.h"
+
+/* Snapshot of the DT-configured init registers, captured once right after the
+ * regulator rails' POST_KERNEL init and before any test suite resets the
+ * emulator. test_init_config() asserts against these (see boot_snapshot_init).
+ */
+static struct {
+	uint8_t buck1ena;
+	uint8_t buck1cfg0;
+	uint8_t buck2dvscfg0;
+	uint8_t buck3cfg0;
+	uint8_t bbstcfg;
+	uint8_t bbstcfg1;
+	uint8_t ldo3ena;
+	uint8_t ldo3cfg;
+	uint8_t lsw1cfg;
+} boot_snapshot;
+
+static int boot_snapshot_init(void)
+{
+	const struct emul *emul = EMUL_DT_GET(DT_NODELABEL(pmic));
+
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_BUCK1ENA, &boot_snapshot.buck1ena);
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_BUCK1CFG0, &boot_snapshot.buck1cfg0);
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_BUCK2DVSCFG0, &boot_snapshot.buck2dvscfg0);
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_BUCK3CFG, &boot_snapshot.buck3cfg0);
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_BBSTCFG, &boot_snapshot.bbstcfg);
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_BBSTCFG1, &boot_snapshot.bbstcfg1);
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_LDO3ENA, &boot_snapshot.ldo3ena);
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_LDO3CFG, &boot_snapshot.ldo3cfg);
+	mfd_max20356_emul_get_reg(emul, MAX20356_REG_LSW1CFG, &boot_snapshot.lsw1cfg);
+
+	return 0;
+}
+/* APPLICATION level runs after POST_KERNEL device init, before ztest starts. */
+SYS_INIT(boot_snapshot_init, APPLICATION, 0);
 
 struct max20356_reg_fixture {
 	const struct device *buck1;
@@ -298,4 +334,64 @@ ZTEST_F(max20356_reg, test_bus_error_propagates)
 	zassert_true(regulator_enable(fixture->buck1) < 0);
 
 	mfd_max20356_emul_set_fail(fixture->emul, false);
+}
+
+/* The DT-configured init block (registers 0x30..0x71) is applied at boot: only
+ * present properties are written, unset fields keep their reset value, and the
+ * masked writes coexist with the enable/DVS fields in the same registers. Uses
+ * the boot snapshot because the per-suite emulator resets wipe these writes.
+ */
+ZTEST(max20356_reg, test_init_config)
+{
+	/* buck1: sequencing slot set to 3, enable field left untouched. */
+	zassert_equal(FIELD_GET(MAX20356_BUCK1ENA_BUCK1SEQ_MSK, boot_snapshot.buck1ena), 3,
+		      "buck1 Seq = %u", FIELD_GET(MAX20356_BUCK1ENA_BUCK1SEQ_MSK,
+						  boot_snapshot.buck1ena));
+	zassert_equal(FIELD_GET(MAX20356_BUCK1ENA_BUCK1EN_MSK, boot_snapshot.buck1ena), 0,
+		      "buck1 En disturbed by Seq write");
+
+	/* buck1 Cfg0: LowEMI and FPWM requested; FPWM lives in Cfg1, LowEMI in
+	 * Cfg0. Only the two requested bits should be set; an unconfigured Cfg0
+	 * bit (Fast) must stay clear.
+	 */
+	zassert_true((boot_snapshot.buck1cfg0 & MAX20356_BUCK1CFG0_BUCK1LOWEMI_MSK) != 0U,
+		     "buck1 LowEMI not set");
+	zassert_true((boot_snapshot.buck1cfg0 & MAX20356_BUCK1CFG0_BUCK1FAST_MSK) == 0U,
+		     "buck1 Fast set but not requested");
+
+	/* buck2 DvsCfg0: DvsIpMax[5] from the init block AND the GPIO DvsCfg[4:0]
+	 * code from dvs_init both survive (masked writes to disjoint bits).
+	 */
+	zassert_true((boot_snapshot.buck2dvscfg0 & MAX20356_BUCK2DVSCFG0_BUCK2DVSIPMAX_MSK) != 0U,
+		     "buck2 DvsIpMax not set");
+	zassert_true(FIELD_GET(MAX20356_BUCK2DVSCFG0_BUCK2DVSCFG_MSK, boot_snapshot.buck2dvscfg0) !=
+			     0U,
+		     "buck2 GPIO DvsCfg code clobbered by DvsIpMax write");
+
+	/* buck3: no adi,buck-* Cfg0 property in the overlay, so the register is
+	 * untouched (write-only-if-present).
+	 */
+	zassert_equal(boot_snapshot.buck3cfg0, 0, "buck3 Cfg0 written but nothing requested");
+
+	/* buck-boost: Cfg LowEMI bool, Cfg1 Fast bool, and the 2-bit fHIGH enum. */
+	zassert_true((boot_snapshot.bbstcfg & MAX20356_BBSTCFG_BBSTLOWEMI_MSK) != 0U,
+		     "bbst LowEMI not set");
+	zassert_true((boot_snapshot.bbstcfg1 & MAX20356_BBSTCFG1_BBSTFAST_MSK) != 0U,
+		     "bbst Fast not set");
+	zassert_equal(FIELD_GET(MAX20356_BBSTCFG1_BBFHIGHSH_MSK, boot_snapshot.bbstcfg1), 2,
+		      "bbst fHIGH threshold = %u",
+		      FIELD_GET(MAX20356_BBSTCFG1_BBFHIGHSH_MSK, boot_snapshot.bbstcfg1));
+
+	/* LDO3: sequencing slot 5 and two Cfg bools. */
+	zassert_equal(FIELD_GET(MAX20356_LDO3ENA_LDO3SEQ_MSK, boot_snapshot.ldo3ena), 5,
+		      "ldo3 Seq = %u",
+		      FIELD_GET(MAX20356_LDO3ENA_LDO3SEQ_MSK, boot_snapshot.ldo3ena));
+	zassert_true((boot_snapshot.ldo3cfg & MAX20356_LDO3CFG_LDO3_NOCLP_MSK) != 0U,
+		     "ldo3 NOCLP not set");
+	zassert_true((boot_snapshot.ldo3cfg & MAX20356_LDO3CFG_LDO3PSVDSC_MSK) != 0U,
+		     "ldo3 PsvDsc not set");
+
+	/* LSW1: non-lockable rail, LowIq set through the plain update path. */
+	zassert_true((boot_snapshot.lsw1cfg & MAX20356_LSW1CFG_LSW1LOWIQ_MSK) != 0U,
+		     "lsw1 LowIq not set");
 }

@@ -54,6 +54,12 @@
 				adi,buck-voltage-step-microvolt = <25000>;
 				regulator-min-microvolt = <500000>;
 				regulator-max-microvolt = <2075000>;
+				/* Init-block coverage: two Cfg0 bits and the
+				 * common sequencing slot.
+				 */
+				adi,buck-low-emi;
+				adi,buck-forced-pwm;
+				adi,sequence-slot = <3>;
 			};
 
 			reg_buck2: buck2 {
@@ -64,6 +70,10 @@
 				adi,dvs-valley-current-microamp = <1000000>;
 				regulator-min-microvolt = <500000>;
 				regulator-max-microvolt = <2075000>;
+				/* DvsIpMax shares DvsCfg0 with the GPIO DVS
+				 * fields; proves the two masked writes compose.
+				 */
+				adi,buck-dvs-ipmax;
 			};
 
 			reg_buck3: buck3 {
@@ -77,6 +87,12 @@
 			reg_bbst: buckboost {
 				regulator-min-microvolt = <2500000>;
 				regulator-max-microvolt = <5500000>;
+				/* Covers a Cfg bool, a Cfg1 bool and the
+				 * Cfg1 2-bit fHIGH enum.
+				 */
+				adi,bbst-low-emi;
+				adi,bbst-fast;
+				adi,bbst-fhigh-threshold = <2>;
 			};
 
 			reg_ldo1: ldo1 {
@@ -88,6 +104,10 @@
 			reg_ldo3: ldo3 {
 				regulator-min-microvolt = <900000>;
 				regulator-max-microvolt = <4075000>;
+				/* Covers two LDO3Cfg bools and the sequencing slot. */
+				adi,ldo3-no-clip-protection;
+				adi,ldo3-passive-discharge;
+				adi,sequence-slot = <5>;
 			};
 
 			reg_ldo4: ldo4 {
@@ -96,6 +116,8 @@
 			};
 
 			reg_lsw1: lsw1 {
+				/* Covers the non-lockable init path. */
+				adi,lsw-low-iq;
 			};
 		};
 	};
