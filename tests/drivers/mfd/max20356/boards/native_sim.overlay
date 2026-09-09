@@ -116,6 +116,7 @@
 				regulator-min-microvolt = <900000>;
 				regulator-max-microvolt = <4000000>;
 				regulator-initial-mode = <MAX20356_MODE_LDO>;
+				adi,lock-enable;
 			};
 
 			reg_ldo3: ldo3 {

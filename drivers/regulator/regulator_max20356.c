@@ -130,6 +130,11 @@ struct regulator_max20356_config {
 	uint8_t dvs_mpc_pair[2];
 	uint8_t dvs_mpc_pair_len;
 	bool ldo4_rtc;
+	/* DT adi,lock-enable: route this rail's writes through the password
+	 * sequence (true) or write directly (false). Only meaningful for a rail
+	 * whose desc->lockable is set.
+	 */
+	bool lock_enable;
 };
 
 struct regulator_max20356_data {
@@ -141,14 +146,15 @@ struct regulator_max20356_common_config {
 };
 
 /* Route a register update through the password sequence for lockable rails
- * (bucks, buck-boost, LDOs) or a plain update for the load switches.
+ * (bucks, buck-boost, LDOs) whose adi,lock-enable is set, or a plain update for
+ * the load switches and for rails the devicetree marks as already unlocked.
  */
 static int regulator_max20356_reg_update(const struct device *dev, uint8_t reg, uint8_t mask,
 					 uint8_t val)
 {
 	const struct regulator_max20356_config *config = dev->config;
 
-	if (config->desc->lockable) {
+	if (config->desc->lockable && config->lock_enable) {
 		return mfd_max20356_reg_update_locked(config->mfd_dev, config->desc->lock, reg, mask,
 						      val);
 	}
@@ -544,9 +550,9 @@ static int regulator_max20356_dvs_init(const struct device *dev)
 				return -EINVAL;
 			}
 
-			ret = mfd_max20356_reg_update_locked(
-				config->mfd_dev, desc->lock, desc->dvsvlt_reg[i],
-				desc->vset_mask, FIELD_PREP(desc->vset_mask, idx));
+			ret = regulator_max20356_reg_update(dev, desc->dvsvlt_reg[i],
+							    desc->vset_mask,
+							    FIELD_PREP(desc->vset_mask, idx));
 			if (ret != 0) {
 				return ret;
 			}
@@ -562,10 +568,10 @@ static int regulator_max20356_dvs_init(const struct device *dev)
 		cfg |= MAX20356_BUCK1DVSCFG0_BUCK1DVSCUR_MSK;
 	}
 
-	return mfd_max20356_reg_update_locked(config->mfd_dev, desc->lock, desc->dvscfg0_reg,
-					      MAX20356_BUCK1DVSCFG0_BUCK1DVSCFG_MSK |
-						      MAX20356_BUCK1DVSCFG0_BUCK1DVSCUR_MSK,
-					      cfg);
+	return regulator_max20356_reg_update(dev, desc->dvscfg0_reg,
+					     MAX20356_BUCK1DVSCFG0_BUCK1DVSCFG_MSK |
+						     MAX20356_BUCK1DVSCFG0_BUCK1DVSCUR_MSK,
+					     cfg);
 }
 
 /* Apply the devicetree-configured register block (0x30..0x71). Each entry only
@@ -656,10 +662,9 @@ static int regulator_max20356_init(const struct device *dev)
 			return -ENOTSUP;
 		}
 
-		ret = mfd_max20356_reg_update_locked(config->mfd_dev, config->desc->lock,
-						     MAX20356_REG_LDO4CFG,
-						     MAX20356_LDO4CFG_LDO4RTC_MSK,
-						     MAX20356_LDO4CFG_LDO4RTC_MSK);
+		ret = regulator_max20356_reg_update(dev, MAX20356_REG_LDO4CFG,
+						    MAX20356_LDO4CFG_LDO4RTC_MSK,
+						    MAX20356_LDO4CFG_LDO4RTC_MSK);
 		if (ret != 0) {
 			return ret;
 		}
@@ -1052,6 +1057,7 @@ MAX20356_LSW_DESC(3);
 		.mpc_ctr_mask = MAX20356_MPC_CTR_MASK(node_id, _sel),                               \
 		.mpc_all_mask = MAX20356_MPC_ALL_MASK(node_id),                                     \
 		.ldo4_rtc = DT_PROP_OR(node_id, adi_ldo4_always_on_off_on_pfn1, 0),                 \
+		.lock_enable = DT_PROP(node_id, adi_lock_enable),                                    \
 		.dvs_mode = DT_ENUM_IDX_OR(node_id, adi_dvs_mode, MAX20356_DVS_MODE_I2C),            \
 		.dvs_mpc_pair = DT_PROP_OR(node_id, adi_dvs_mpc_pair, {0}),                          \
 		.dvs_mpc_pair_len = DT_PROP_LEN_OR(node_id, adi_dvs_mpc_pair, 0),                    \
