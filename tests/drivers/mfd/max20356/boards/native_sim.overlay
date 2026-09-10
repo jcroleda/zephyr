@@ -1,0 +1,160 @@
+/*
+ * Copyright (c) 2026 Analog Devices, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <zephyr/dt-bindings/mfd/max20356.h>
+
+&spi0 {
+	status = "okay";
+
+	dvs_spi_dev: dvs-spi-dev@0 {
+		compatible = "vnd,spi-device";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+	};
+};
+
+&i2c0 {
+	status = "okay";
+
+	pmic: max20356@28 {
+		compatible = "adi,max20356";
+		reg = <0x28>;
+		status = "okay";
+		int-gpios = <&gpio0 0 GPIO_ACTIVE_LOW>;
+
+		/* Device-level init config: one PwrCfg bit and two
+		 * MiscFunctions bits. StayOn and MiscFunc[0] are left
+		 * unset to prove write-only-if-present.
+		 */
+		adi,intb-unmasked-in-shutdown;
+		adi,rtc-ldo-off;
+		adi,factory-mode-disabled;
+
+		gpio_mpc: gpio {
+			compatible = "adi,max20356-gpio";
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <8>;
+		};
+
+		charger: charger {
+			compatible = "adi,max20356-charger";
+			constant-charge-current-microamp = <100000>;
+			constant-charge-voltage-microvolt = <4200000>;
+			/* Init-block coverage: one linear, one multi-field enum
+			 * register, one JEITA threshold and one boolean. CHGCTR2
+			 * is left unset to prove write-only-if-present.
+			 */
+			adi,cc2-charge-current-microamp = <200000>;
+			adi,safety-timer-minutes = <300>;
+			adi,cc1-fastcharge-timer-minutes = <120>;
+			adi,thermistor-monitoring-mode = <3>;
+			adi,jeita-t3-cc1-celsius = <45>;
+			adi,cc1-enable;
+		};
+
+		regulators {
+			compatible = "adi,max20356-regulator";
+
+			/* MPC enable routing: MPC6 -> LSW1, MPC7 -> BUCK3. Pins
+			 * 0..2 (SPI DVS) and 3/5 (buck2 GPIO DVS pair) are left
+			 * unrouted to avoid colliding with the DVS tests.
+			 */
+			adi,mpc-enable-rails =
+				<MAX20356_MPC_NONE MAX20356_MPC_NONE MAX20356_MPC_NONE
+				 MAX20356_MPC_NONE MAX20356_MPC_NONE MAX20356_MPC_NONE
+				 MAX20356_MPC_LSW1 MAX20356_MPC_BUCK3>;
+
+			reg_buck1: buck1 {
+				adi,buck-voltage-step-microvolt = <25000>;
+				regulator-min-microvolt = <500000>;
+				regulator-max-microvolt = <2075000>;
+				/* Init-block coverage: two Cfg0 bits and the
+				 * common sequencing slot.
+				 */
+				adi,buck-low-emi;
+				adi,buck-forced-pwm;
+				adi,sequence-slot = <3>;
+			};
+
+			reg_buck2: buck2 {
+				adi,buck-voltage-step-microvolt = <25000>;
+				adi,dvs-mode = "gpio";
+				adi,dvs-mpc-pair = <3 5>;
+				adi,dvs-voltages = <1000000 1100000 1200000 1300000>;
+				adi,dvs-valley-current-microamp = <1000000>;
+				regulator-min-microvolt = <500000>;
+				regulator-max-microvolt = <2075000>;
+				/* DvsIpMax shares DvsCfg0 with the GPIO DVS
+				 * fields; proves the two masked writes compose.
+				 */
+				adi,buck-dvs-ipmax;
+			};
+
+			reg_buck3: buck3 {
+				adi,buck-voltage-step-microvolt = <25000>;
+				adi,dvs-mode = "spi";
+				adi,dvs-spi = <&dvs_spi_dev>;
+				regulator-min-microvolt = <500000>;
+				regulator-max-microvolt = <2075000>;
+			};
+
+			reg_bbst: buckboost {
+				regulator-min-microvolt = <2500000>;
+				regulator-max-microvolt = <5500000>;
+				/* Covers a Cfg bool, a Cfg1 bool and the
+				 * Cfg1 2-bit fHIGH enum.
+				 */
+				adi,bbst-low-emi;
+				adi,bbst-fast;
+				adi,bbst-fhigh-threshold = <2>;
+			};
+
+			reg_ldo1: ldo1 {
+				regulator-min-microvolt = <900000>;
+				regulator-max-microvolt = <4000000>;
+				regulator-initial-mode = <MAX20356_MODE_LDO>;
+				adi,lock-enable;
+			};
+
+			reg_ldo3: ldo3 {
+				regulator-min-microvolt = <900000>;
+				regulator-max-microvolt = <4075000>;
+				/* Covers two LDO3Cfg bools and the sequencing slot. */
+				adi,ldo3-no-clip-protection;
+				adi,ldo3-passive-discharge;
+				adi,sequence-slot = <5>;
+			};
+
+			reg_ldo4: ldo4 {
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <1850000>;
+			};
+
+			reg_lsw1: lsw1 {
+				/* Covers the non-lockable init path. */
+				adi,lsw-low-iq;
+			};
+		};
+	};
+
+	pmic58: max20358@29 {
+		compatible = "adi,max20358";
+		reg = <0x29>;
+		status = "okay";
+
+		/* The watchdog needs a parent with no other INTB consumer so it can
+		 * own the shared Int5 register exclusively while armed. pmic58 has no
+		 * charger/regulator children, unlike pmic.
+		 */
+		wdog: watchdog {
+			compatible = "adi,max20356-watchdog";
+			/* Route WDCntl writes through the password sequence so the
+			 * locked-domain test exercises the unlock/write/re-lock path.
+			 */
+			adi,lock-enable;
+		};
+	};
+};
