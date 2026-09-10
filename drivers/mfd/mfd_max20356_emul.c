@@ -2,11 +2,6 @@
  * Copyright (c) 2026 Analog Devices, Inc.
  *
  * SPDX-License-Identifier: Apache-2.0
- *
- * Register-model emulator for the MAX20356/MAX20358 PMIC. Backs the MFD parent's
- * I2C accesses with a 256-byte register file. Read-only registers (RevID, the
- * Status/DVS-SPI/PFN/BootCfg group) ignore writes from the I2C path so they read
- * back a constant value; tests seed them through mfd_max20356_emul_set_reg().
  */
 
 #include <string.h>
@@ -38,7 +33,7 @@ struct max20356_emul_data {
 	 * locked and writes to them from the I2C path are dropped.
 	 */
 	uint8_t locked_mask;
-	/* Same, for the LockMsk3 bank (charger/limiter/watchdog domains). */
+	/* Same for the LockMsk3 bank (charger/limiter/watchdog domains). */
 	uint8_t locked_mask3;
 	bool fail;
 };
@@ -284,9 +279,7 @@ static int max20356_emul_transfer_i2c(const struct emul *target, struct i2c_msg 
 			msgs->buf[i] = data->regs[src_reg];
 
 			/* Int0-5 (0x07-0x0C) are clear-on-read: the read latches the
-			 * value and clears the source. This makes a watchdog feed
-			 * (Int5.WDTmr read) observable and matches the trigger's
-			 * clear-on-read assumption.
+			 * value and clears the source.
 			 */
 			if (src_reg >= MAX20356_REG_INT0 && src_reg <= MAX20356_REG_INT5) {
 				data->regs[src_reg] = 0U;
@@ -314,13 +307,13 @@ static const struct i2c_emul_api max20356_emul_api_i2c = {
 };
 
 #define MAX20356_EMUL_DEFINE(inst, part)                                                           \
-	static struct max20356_emul_data max20356_emul_data_##part##_##inst;                              \
+	static struct max20356_emul_data max20356_emul_data_##part##_##inst;                       \
                                                                                                    \
-	static const struct max20356_emul_cfg max20356_emul_cfg_##part##_##inst = {                       \
-		.addr = DT_INST_REG_ADDR(inst),                                                                  \
-	};                                                                                                \
+	static const struct max20356_emul_cfg max20356_emul_cfg_##part##_##inst = {                \
+		.addr = DT_INST_REG_ADDR(inst),                                                    \
+	};                                                                                         \
                                                                                                    \
-	EMUL_DT_INST_DEFINE(inst, max20356_emul_init, &max20356_emul_data_##part##_##inst,                \
+	EMUL_DT_INST_DEFINE(inst, max20356_emul_init, &max20356_emul_data_##part##_##inst,         \
 			    &max20356_emul_cfg_##part##_##inst, &max20356_emul_api_i2c, NULL)
 
 #define DT_DRV_COMPAT adi_max20356

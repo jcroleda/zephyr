@@ -2,12 +2,6 @@
  * Copyright (c) 2026 Analog Devices, Inc.
  *
  * SPDX-License-Identifier: Apache-2.0
- *
- * MAX20356/MAX20358 battery charger child driver. Exposes the Zephyr charger
- * API on top of the MFD parent's shared I2C register access. Charger status,
- * health and online are decoded live from the Status0/Status1 registers; the
- * fast-charge current and battery regulation voltage are cached because their
- * registers are cleared on a CHGIN edge.
  */
 
 #define DT_DRV_COMPAT adi_max20356_charger
@@ -16,6 +10,7 @@
 
 #include <zephyr/device.h>
 #include <zephyr/drivers/charger.h>
+#include <zephyr/drivers/charger/max20356.h>
 #include <zephyr/drivers/mfd/max20356.h>
 #include <zephyr/sys/linear_range.h>
 #include <zephyr/sys/util.h>
@@ -61,10 +56,7 @@ static const struct linear_range vbatreg_uv_range[] = {
 	LINEAR_RANGE_INIT(4150000, 10000, 0x00U, 0x37U),
 };
 
-/* One masked register write applied at init from devicetree. Only fields with a
- * property present in the node contribute to @mask, so a register with no
- * configured field has @mask == 0 and is skipped (its OTP default is kept).
- */
+/* One masked register write applied at init from devicetree config properties. */
 struct charger_max20356_init_reg {
 	uint8_t reg;
 	uint8_t mask;
@@ -85,16 +77,12 @@ struct charger_max20356_data {
 	const struct device *dev;
 	uint32_t ichg_ua;
 	uint32_t vbatreg_uv;
+	uint32_t cc2_ua;
 	bool charger_enabled;
 	charger_status_notifier_t status_notifier;
 	charger_online_notifier_t online_notifier;
 #ifdef CONFIG_MFD_MAX20356_TRIGGER
-	/* Which INTB event groups the driver currently holds a callback for.
-	 * Registration is lazy: a group is claimed only while a consumer has the
-	 * matching notifier installed, so a charger with no notifier in use leaves
-	 * INTB free for another consumer (for example the watchdog, which requires
-	 * exclusive INTB ownership).
-	 */
+	/* Which INTB event groups the driver currently holds a callback for. */
 	bool cb_chg_active;
 	bool cb_thm_active;
 	bool cb_usb_active;
@@ -275,6 +263,38 @@ static int charger_max20356_set_constant_charge_current(const struct device *dev
 	return 0;
 }
 
+/* Set the CC2 fast-charge current (ChgCur1/CC2IFChg). Shares the CC1 encoding
+ * and range; exposed through the MAX20356_CHARGER_PROP_CC2_CURRENT_UA custom
+ * property because the charger API has only a single constant-charge current.
+ */
+static int charger_max20356_set_cc2_current(const struct device *dev, uint32_t current_ua)
+{
+	const struct charger_max20356_config *cfg = dev->config;
+	struct charger_max20356_data *data = dev->data;
+	uint16_t idx;
+	int ret;
+
+	if ((current_ua < MAX20356_ICHG_MIN_UA) || (current_ua > MAX20356_ICHG_MAX_UA)) {
+		return -EINVAL;
+	}
+
+	ret = linear_range_group_get_index(ichg_ua_range, ARRAY_SIZE(ichg_ua_range), current_ua,
+					   &idx);
+	if (ret != 0) {
+		return -EINVAL;
+	}
+
+	ret = mfd_max20356_reg_update(cfg->mfd_dev, MAX20356_REG_CHGCUR1,
+				      MAX20356_CHGCUR1_CC2IFCHG_MSK,
+				      FIELD_PREP(MAX20356_CHGCUR1_CC2IFCHG_MSK, idx));
+	if (ret != 0) {
+		return ret;
+	}
+
+	data->cc2_ua = current_ua;
+	return 0;
+}
+
 static int charger_max20356_set_constant_charge_voltage(const struct device *dev,
 							uint32_t voltage_uv)
 {
@@ -341,6 +361,9 @@ static int charger_max20356_get_prop(const struct device *dev, charger_prop_t pr
 	case CHARGER_PROP_CONSTANT_CHARGE_VOLTAGE_UV:
 		val->const_charge_voltage_uv = data->vbatreg_uv;
 		return 0;
+	case MAX20356_CHARGER_PROP_CC2_CURRENT_UA:
+		val->custom_uint = data->cc2_ua;
+		return 0;
 	default:
 		return -ENOTSUP;
 	}
@@ -349,7 +372,7 @@ static int charger_max20356_get_prop(const struct device *dev, charger_prop_t pr
 #ifdef CONFIG_MFD_MAX20356_TRIGGER
 /*
  * INTB event handler: charger/USB/thermal sources feed the status and online
- * notifiers so consumers see interrupt-driven state changes (REQ-IRQ-006).
+ * notifiers so consumers see interrupt-driven state changes.
  */
 static void charger_max20356_evt(const struct device *mfd_dev, enum max20356_event evt, void *user)
 {
@@ -379,20 +402,20 @@ static void charger_max20356_evt(const struct device *mfd_dev, enum max20356_eve
 }
 
 /* Add or drop the INTB callback for one event group so that *active tracks
- * @p want. Adding can fail (for example -EBUSY while the watchdog owns INTB);
+ * @p enable. Adding can fail (for example -EBUSY while the watchdog owns INTB);
  * dropping cannot, so *active only advances to the reached state.
  */
 static int charger_max20356_set_group(const struct device *dev, enum max20356_event evt,
-				      bool *active, bool want)
+				      bool *active, bool enable)
 {
 	const struct charger_max20356_config *cfg = dev->config;
 	int ret;
 
-	if (want == *active) {
+	if (enable == *active) {
 		return 0;
 	}
 
-	if (want) {
+	if (enable) {
 		ret = mfd_max20356_add_callback(cfg->mfd_dev, evt, charger_max20356_evt,
 						(void *)dev);
 		if (ret != 0) {
@@ -402,7 +425,7 @@ static int charger_max20356_set_group(const struct device *dev, enum max20356_ev
 		(void)mfd_max20356_remove_callback(cfg->mfd_dev, evt, charger_max20356_evt);
 	}
 
-	*active = want;
+	*active = enable;
 
 	return 0;
 }
@@ -415,17 +438,17 @@ static int charger_max20356_set_group(const struct device *dev, enum max20356_ev
 static int charger_max20356_sync_callbacks(const struct device *dev)
 {
 	struct charger_max20356_data *data = dev->data;
-	bool want_status = data->status_notifier != NULL;
+	bool en_status = data->status_notifier != NULL;
 	int ret;
 
 	ret = charger_max20356_set_group(dev, MAX20356_EVT_CHARGER, &data->cb_chg_active,
-					 want_status);
+					 en_status);
 	if (ret != 0) {
 		return ret;
 	}
 
 	ret = charger_max20356_set_group(dev, MAX20356_EVT_THERMAL, &data->cb_thm_active,
-					 want_status);
+					 en_status);
 	if (ret != 0) {
 		return ret;
 	}
@@ -455,6 +478,8 @@ static int charger_max20356_set_prop(const struct device *dev, charger_prop_t pr
 	case CHARGER_PROP_CONSTANT_CHARGE_VOLTAGE_UV:
 		return charger_max20356_set_constant_charge_voltage(dev,
 								    val->const_charge_voltage_uv);
+	case MAX20356_CHARGER_PROP_CC2_CURRENT_UA:
+		return charger_max20356_set_cc2_current(dev, val->custom_uint);
 	case CHARGER_PROP_STATUS_NOTIFICATION: {
 		charger_status_notifier_t prev = data->status_notifier;
 
@@ -482,40 +507,48 @@ static int charger_max20356_set_prop(const struct device *dev, charger_prop_t pr
 	}
 }
 
-/* Apply the CC2 fast-charge current (ChgCur1) if configured. Shares the CC1
- * encoding and range; kept out of the get/set_prop path because the charger API
- * exposes only a single constant-charge current.
+/* Init wrapper for the CC1 fast-charge current: applies the devicetree value
+ * when configured (a zero property leaves the OTP default in place).
+ */
+static int charger_max20356_init_cc1(const struct device *dev)
+{
+	const struct charger_max20356_config *cfg = dev->config;
+
+	if (cfg->init_ichg_ua == 0U) {
+		return 0;
+	}
+
+	return charger_max20356_set_constant_charge_current(dev, cfg->init_ichg_ua);
+}
+
+/* Init wrapper for the CC2 fast-charge current: applies the devicetree value
+ * when configured (a zero property leaves the OTP default in place).
  */
 static int charger_max20356_init_cc2(const struct device *dev)
 {
 	const struct charger_max20356_config *cfg = dev->config;
-	uint16_t idx;
-	int ret;
 
 	if (cfg->init_cc2_ua == 0U) {
 		return 0;
 	}
 
-	if ((cfg->init_cc2_ua < MAX20356_ICHG_MIN_UA) ||
-	    (cfg->init_cc2_ua > MAX20356_ICHG_MAX_UA)) {
-		return -EINVAL;
-	}
-
-	ret = linear_range_group_get_index(ichg_ua_range, ARRAY_SIZE(ichg_ua_range),
-					   cfg->init_cc2_ua, &idx);
-	if (ret != 0) {
-		return -EINVAL;
-	}
-
-	return mfd_max20356_reg_update(cfg->mfd_dev, MAX20356_REG_CHGCUR1,
-				      MAX20356_CHGCUR1_CC2IFCHG_MSK,
-				      FIELD_PREP(MAX20356_CHGCUR1_CC2IFCHG_MSK, idx));
+	return charger_max20356_set_cc2_current(dev, cfg->init_cc2_ua);
 }
 
-/* Apply the devicetree-configured register block (0x19..0x28). Each entry only
- * touches the fields whose property was present in the node; entries with an
- * empty mask are skipped so the chip's OTP defaults are preserved.
+/* Init wrapper for the battery regulation voltage: applies the devicetree value
+ * when configured (a zero property leaves the OTP default in place).
  */
+static int charger_max20356_init_vbatreg(const struct device *dev)
+{
+	const struct charger_max20356_config *cfg = dev->config;
+
+	if (cfg->init_vbatreg_uv == 0U) {
+		return 0;
+	}
+
+	return charger_max20356_set_constant_charge_voltage(dev, cfg->init_vbatreg_uv);
+}
+
 static int charger_max20356_init_regs(const struct device *dev)
 {
 	const struct charger_max20356_config *cfg = dev->config;
@@ -556,26 +589,22 @@ static int charger_max20356_init(const struct device *dev)
 		return ret;
 	}
 
+	ret = charger_max20356_init_cc1(dev);
+	if (ret != 0) {
+		LOG_ERR("Failed to set CC1 fast-charge current: %d", ret);
+		return ret;
+	}
+
 	ret = charger_max20356_init_cc2(dev);
 	if (ret != 0) {
 		LOG_ERR("Failed to set CC2 fast-charge current: %d", ret);
 		return ret;
 	}
 
-	if (cfg->init_ichg_ua != 0U) {
-		ret = charger_max20356_set_constant_charge_current(dev, cfg->init_ichg_ua);
-		if (ret != 0) {
-			LOG_ERR("Failed to set fast-charge current: %d", ret);
-			return ret;
-		}
-	}
-
-	if (cfg->init_vbatreg_uv != 0U) {
-		ret = charger_max20356_set_constant_charge_voltage(dev, cfg->init_vbatreg_uv);
-		if (ret != 0) {
-			LOG_ERR("Failed to set battery regulation voltage: %d", ret);
-			return ret;
-		}
+	ret = charger_max20356_init_vbatreg(dev);
+	if (ret != 0) {
+		LOG_ERR("Failed to set battery regulation voltage: %d", ret);
+		return ret;
 	}
 
 	return 0;
@@ -587,14 +616,7 @@ static DEVICE_API(charger, charger_max20356_driver_api) = {
 	.charge_enable = charger_max20356_charge_enable,
 };
 
-/* Devicetree field-contribution helpers for the init register block. A field
- * contributes to a register's mask (and therefore is written) only when its
- * property is present in the node; otherwise the OTP default is kept.
- *
- * Boolean fields are presence-only: a present property sets its bit, an absent
- * one leaves the bit untouched. Enum fields are listed in the binding in
- * register-code order, so DT_INST_ENUM_IDX yields the raw field value directly.
- */
+/* Devicetree field-contribution helpers for the init register block. */
 #define MAX20356_DT_BOOL(inst, prop, msk) (DT_INST_PROP(inst, prop) ? (uint8_t)(msk) : 0U)
 #define MAX20356_DT_ENUM_M(inst, prop, msk)                                                        \
 	(DT_INST_NODE_HAS_PROP(inst, prop) ? (uint8_t)(msk) : 0U)
@@ -625,178 +647,179 @@ static DEVICE_API(charger, charger_max20356_driver_api) = {
 #define CHARGER_MAX20356_DEFINE(inst)                                                              \
 	static const struct charger_max20356_init_reg charger_max20356_init_regs_##inst[] = {      \
 		MAX20356_INIT_ENTRY(MAX20356_REG_CHGCNTL0, MAX20356_CHGCNTL0_BITS(inst),           \
-				    MAX20356_CHGCNTL0_BITS(inst)),                                \
+				    MAX20356_CHGCNTL0_BITS(inst)),                                 \
 		MAX20356_INIT_ENTRY(                                                               \
 			MAX20356_REG_CHGCNTL1,                                                     \
-			MAX20356_DT_ENUM_M(inst, adi_recharge_threshold_microvolt,                \
-					   MAX20356_CHGCNTL1_BATRECHG_MSK),                       \
-			MAX20356_DT_ENUM_V(inst, adi_recharge_threshold_microvolt,                \
-					   MAX20356_CHGCNTL1_BATRECHG_MSK)),                      \
+			MAX20356_DT_ENUM_M(inst, adi_recharge_threshold_microvolt,                 \
+					   MAX20356_CHGCNTL1_BATRECHG_MSK),                        \
+			MAX20356_DT_ENUM_V(inst, adi_recharge_threshold_microvolt,                 \
+					   MAX20356_CHGCNTL1_BATRECHG_MSK)),                       \
 		MAX20356_INIT_ENTRY(                                                               \
 			MAX20356_REG_CHGCNTL2,                                                     \
-			MAX20356_DT_ENUM_M(inst, adi_precharge_voltage_microvolt,                 \
-					   MAX20356_CHGCNTL2_VPCHG_MSK) |                         \
-				MAX20356_DT_ENUM_M(inst, adi_precharge_current_percent,           \
-						   MAX20356_CHGCNTL2_IPCHG_MSK) |                 \
-				MAX20356_DT_ENUM_M(inst, adi_charge_done_current_percent,         \
-						   MAX20356_CHGCNTL2_ICHGDONE_MSK),               \
-			MAX20356_DT_ENUM_V(inst, adi_precharge_voltage_microvolt,                 \
-					   MAX20356_CHGCNTL2_VPCHG_MSK) |                         \
-				MAX20356_DT_ENUM_V(inst, adi_precharge_current_percent,           \
-						   MAX20356_CHGCNTL2_IPCHG_MSK) |                 \
-				MAX20356_DT_ENUM_V(inst, adi_charge_done_current_percent,         \
-						   MAX20356_CHGCNTL2_ICHGDONE_MSK)),              \
+			MAX20356_DT_ENUM_M(inst, adi_precharge_voltage_microvolt,                  \
+					   MAX20356_CHGCNTL2_VPCHG_MSK) |                          \
+				MAX20356_DT_ENUM_M(inst, adi_precharge_current_percent,            \
+						   MAX20356_CHGCNTL2_IPCHG_MSK) |                  \
+				MAX20356_DT_ENUM_M(inst, adi_charge_done_current_percent,          \
+						   MAX20356_CHGCNTL2_ICHGDONE_MSK),                \
+			MAX20356_DT_ENUM_V(inst, adi_precharge_voltage_microvolt,                  \
+					   MAX20356_CHGCNTL2_VPCHG_MSK) |                          \
+				MAX20356_DT_ENUM_V(inst, adi_precharge_current_percent,            \
+						   MAX20356_CHGCNTL2_IPCHG_MSK) |                  \
+				MAX20356_DT_ENUM_V(inst, adi_charge_done_current_percent,          \
+						   MAX20356_CHGCNTL2_ICHGDONE_MSK)),               \
 		MAX20356_INIT_ENTRY(                                                               \
 			MAX20356_REG_CHGTMR,                                                       \
-			MAX20356_DT_ENUM_M(inst, adi_maintain_charge_timer_minutes,               \
-					   MAX20356_CHGTMR_MTCHGTMR_MSK) |                       \
-				MAX20356_DT_ENUM_M(inst, adi_precharge_timer_minutes,             \
-						   MAX20356_CHGTMR_PCHGTMR_MSK) |                 \
-				MAX20356_DT_ENUM_M(inst, adi_cc1_fastcharge_timer_minutes,        \
-						   MAX20356_CHGTMR_CC1FCHGTMR_MSK) |              \
-				MAX20356_DT_ENUM_M(inst, adi_safety_timer_minutes,                \
-						   MAX20356_CHGTMR_CHGTMR_MSK),                   \
-			MAX20356_DT_ENUM_V(inst, adi_maintain_charge_timer_minutes,               \
-					   MAX20356_CHGTMR_MTCHGTMR_MSK) |                       \
-				MAX20356_DT_ENUM_V(inst, adi_precharge_timer_minutes,             \
-						   MAX20356_CHGTMR_PCHGTMR_MSK) |                 \
-				MAX20356_DT_ENUM_V(inst, adi_cc1_fastcharge_timer_minutes,        \
-						   MAX20356_CHGTMR_CC1FCHGTMR_MSK) |              \
-				MAX20356_DT_ENUM_V(inst, adi_safety_timer_minutes,                \
-						   MAX20356_CHGTMR_CHGTMR_MSK)),                  \
+			MAX20356_DT_ENUM_M(inst, adi_maintain_charge_timer_minutes,                \
+					   MAX20356_CHGTMR_MTCHGTMR_MSK) |                         \
+				MAX20356_DT_ENUM_M(inst, adi_precharge_timer_minutes,              \
+						   MAX20356_CHGTMR_PCHGTMR_MSK) |                  \
+				MAX20356_DT_ENUM_M(inst, adi_cc1_fastcharge_timer_minutes,         \
+						   MAX20356_CHGTMR_CC1FCHGTMR_MSK) |               \
+				MAX20356_DT_ENUM_M(inst, adi_safety_timer_minutes,                 \
+						   MAX20356_CHGTMR_CHGTMR_MSK),                    \
+			MAX20356_DT_ENUM_V(inst, adi_maintain_charge_timer_minutes,                \
+					   MAX20356_CHGTMR_MTCHGTMR_MSK) |                         \
+				MAX20356_DT_ENUM_V(inst, adi_precharge_timer_minutes,              \
+						   MAX20356_CHGTMR_PCHGTMR_MSK) |                  \
+				MAX20356_DT_ENUM_V(inst, adi_cc1_fastcharge_timer_minutes,         \
+						   MAX20356_CHGTMR_CC1FCHGTMR_MSK) |               \
+				MAX20356_DT_ENUM_V(inst, adi_safety_timer_minutes,                 \
+						   MAX20356_CHGTMR_CHGTMR_MSK)),                   \
 		MAX20356_INIT_ENTRY(                                                               \
 			MAX20356_REG_CHGCFG0,                                                      \
-			MAX20356_DT_ENUM_M(inst, adi_step_charge_hysteresis_microvolt,            \
-					   MAX20356_CHGCFG0_CHGSTEPHYST_MSK) |                   \
-				MAX20356_DT_ENUM_M(inst, adi_step_charge_rise_microvolt,          \
-						   MAX20356_CHGCFG0_CHGSTEPRISE_MSK),             \
-			MAX20356_DT_ENUM_V(inst, adi_step_charge_hysteresis_microvolt,            \
-					   MAX20356_CHGCFG0_CHGSTEPHYST_MSK) |                   \
-				MAX20356_DT_ENUM_V(inst, adi_step_charge_rise_microvolt,          \
-						   MAX20356_CHGCFG0_CHGSTEPRISE_MSK)),            \
+			MAX20356_DT_ENUM_M(inst, adi_step_charge_hysteresis_microvolt,             \
+					   MAX20356_CHGCFG0_CHGSTEPHYST_MSK) |                     \
+				MAX20356_DT_ENUM_M(inst, adi_step_charge_rise_microvolt,           \
+						   MAX20356_CHGCFG0_CHGSTEPRISE_MSK),              \
+			MAX20356_DT_ENUM_V(inst, adi_step_charge_hysteresis_microvolt,             \
+					   MAX20356_CHGCFG0_CHGSTEPHYST_MSK) |                     \
+				MAX20356_DT_ENUM_V(inst, adi_step_charge_rise_microvolt,           \
+						   MAX20356_CHGCFG0_CHGSTEPRISE_MSK)),             \
 		MAX20356_INIT_ENTRY(                                                               \
 			MAX20356_REG_THMCFG0,                                                      \
-			MAX20356_DT_ENUM_M(inst, adi_cool_cc1_current_percent,                    \
-					   MAX20356_THMCFG0_CHGCOOLCC1IFCHG_MSK) |               \
-				MAX20356_DT_ENUM_M(inst, adi_cool_batreg_offset_microvolt,        \
-						   MAX20356_THMCFG0_CHGCOOLBATREG_MSK) |          \
-				MAX20356_DT_ENUM_M(inst, adi_cool_cc2_current_percent,            \
-						   MAX20356_THMCFG0_CHGCOOLCC2IFCHG_MSK),         \
-			MAX20356_DT_ENUM_V(inst, adi_cool_cc1_current_percent,                    \
-					   MAX20356_THMCFG0_CHGCOOLCC1IFCHG_MSK) |               \
-				MAX20356_DT_ENUM_V(inst, adi_cool_batreg_offset_microvolt,        \
-						   MAX20356_THMCFG0_CHGCOOLBATREG_MSK) |          \
-				MAX20356_DT_ENUM_V(inst, adi_cool_cc2_current_percent,            \
-						   MAX20356_THMCFG0_CHGCOOLCC2IFCHG_MSK)),        \
+			MAX20356_DT_ENUM_M(inst, adi_cool_cc1_current_percent,                     \
+					   MAX20356_THMCFG0_CHGCOOLCC1IFCHG_MSK) |                 \
+				MAX20356_DT_ENUM_M(inst, adi_cool_batreg_offset_microvolt,         \
+						   MAX20356_THMCFG0_CHGCOOLBATREG_MSK) |           \
+				MAX20356_DT_ENUM_M(inst, adi_cool_cc2_current_percent,             \
+						   MAX20356_THMCFG0_CHGCOOLCC2IFCHG_MSK),          \
+			MAX20356_DT_ENUM_V(inst, adi_cool_cc1_current_percent,                     \
+					   MAX20356_THMCFG0_CHGCOOLCC1IFCHG_MSK) |                 \
+				MAX20356_DT_ENUM_V(inst, adi_cool_batreg_offset_microvolt,         \
+						   MAX20356_THMCFG0_CHGCOOLBATREG_MSK) |           \
+				MAX20356_DT_ENUM_V(inst, adi_cool_cc2_current_percent,             \
+						   MAX20356_THMCFG0_CHGCOOLCC2IFCHG_MSK)),         \
 		MAX20356_INIT_ENTRY(                                                               \
 			MAX20356_REG_THMCFG1,                                                      \
-			MAX20356_DT_ENUM_M(inst, adi_room_cc1_current_percent,                    \
-					   MAX20356_THMCFG1_CHGROOMCC1IFCHG_MSK) |               \
-				MAX20356_DT_ENUM_M(inst, adi_room_batreg_offset_microvolt,        \
-						   MAX20356_THMCFG1_CHGROOMBATREG_MSK) |          \
-				MAX20356_DT_ENUM_M(inst, adi_room_cc2_current_percent,            \
-						   MAX20356_THMCFG1_CHGROOMCC2IFCHG_MSK),         \
-			MAX20356_DT_ENUM_V(inst, adi_room_cc1_current_percent,                    \
-					   MAX20356_THMCFG1_CHGROOMCC1IFCHG_MSK) |               \
-				MAX20356_DT_ENUM_V(inst, adi_room_batreg_offset_microvolt,        \
-						   MAX20356_THMCFG1_CHGROOMBATREG_MSK) |          \
-				MAX20356_DT_ENUM_V(inst, adi_room_cc2_current_percent,            \
-						   MAX20356_THMCFG1_CHGROOMCC2IFCHG_MSK)),        \
+			MAX20356_DT_ENUM_M(inst, adi_room_cc1_current_percent,                     \
+					   MAX20356_THMCFG1_CHGROOMCC1IFCHG_MSK) |                 \
+				MAX20356_DT_ENUM_M(inst, adi_room_batreg_offset_microvolt,         \
+						   MAX20356_THMCFG1_CHGROOMBATREG_MSK) |           \
+				MAX20356_DT_ENUM_M(inst, adi_room_cc2_current_percent,             \
+						   MAX20356_THMCFG1_CHGROOMCC2IFCHG_MSK),          \
+			MAX20356_DT_ENUM_V(inst, adi_room_cc1_current_percent,                     \
+					   MAX20356_THMCFG1_CHGROOMCC1IFCHG_MSK) |                 \
+				MAX20356_DT_ENUM_V(inst, adi_room_batreg_offset_microvolt,         \
+						   MAX20356_THMCFG1_CHGROOMBATREG_MSK) |           \
+				MAX20356_DT_ENUM_V(inst, adi_room_cc2_current_percent,             \
+						   MAX20356_THMCFG1_CHGROOMCC2IFCHG_MSK)),         \
 		MAX20356_INIT_ENTRY(                                                               \
 			MAX20356_REG_THMCFG2,                                                      \
-			MAX20356_DT_ENUM_M(inst, adi_warm_cc1_current_percent,                    \
-					   MAX20356_THMCFG2_CHGWARMCC1IFCHG_MSK) |               \
-				MAX20356_DT_ENUM_M(inst, adi_warm_batreg_offset_microvolt,        \
-						   MAX20356_THMCFG2_CHGWARMBATREG_MSK) |          \
-				MAX20356_DT_ENUM_M(inst, adi_warm_cc2_current_percent,            \
-						   MAX20356_THMCFG2_CHGWARMCC2IFCHG_MSK),         \
-			MAX20356_DT_ENUM_V(inst, adi_warm_cc1_current_percent,                    \
-					   MAX20356_THMCFG2_CHGWARMCC1IFCHG_MSK) |               \
-				MAX20356_DT_ENUM_V(inst, adi_warm_batreg_offset_microvolt,        \
-						   MAX20356_THMCFG2_CHGWARMBATREG_MSK) |          \
-				MAX20356_DT_ENUM_V(inst, adi_warm_cc2_current_percent,            \
-						   MAX20356_THMCFG2_CHGWARMCC2IFCHG_MSK)),        \
+			MAX20356_DT_ENUM_M(inst, adi_warm_cc1_current_percent,                     \
+					   MAX20356_THMCFG2_CHGWARMCC1IFCHG_MSK) |                 \
+				MAX20356_DT_ENUM_M(inst, adi_warm_batreg_offset_microvolt,         \
+						   MAX20356_THMCFG2_CHGWARMBATREG_MSK) |           \
+				MAX20356_DT_ENUM_M(inst, adi_warm_cc2_current_percent,             \
+						   MAX20356_THMCFG2_CHGWARMCC2IFCHG_MSK),          \
+			MAX20356_DT_ENUM_V(inst, adi_warm_cc1_current_percent,                     \
+					   MAX20356_THMCFG2_CHGWARMCC1IFCHG_MSK) |                 \
+				MAX20356_DT_ENUM_V(inst, adi_warm_batreg_offset_microvolt,         \
+						   MAX20356_THMCFG2_CHGWARMBATREG_MSK) |           \
+				MAX20356_DT_ENUM_V(inst, adi_warm_cc2_current_percent,             \
+						   MAX20356_THMCFG2_CHGWARMCC2IFCHG_MSK)),         \
 		MAX20356_INIT_ENTRY(                                                               \
 			MAX20356_REG_THMCFG3,                                                      \
-			MAX20356_DT_ENUM_M(inst, adi_jeita_t1_def_celsius,                        \
-					   MAX20356_THMCFG3_CHGT1THRDEF_MSK) |                   \
-				MAX20356_DT_ENUM_M(inst, adi_jeita_t1_cc1_celsius,                \
-						   MAX20356_THMCFG3_CHGT1THRCC1_MSK),             \
-			MAX20356_DT_ENUM_V(inst, adi_jeita_t1_def_celsius,                        \
-					   MAX20356_THMCFG3_CHGT1THRDEF_MSK) |                   \
-				MAX20356_DT_ENUM_V(inst, adi_jeita_t1_cc1_celsius,                \
-						   MAX20356_THMCFG3_CHGT1THRCC1_MSK)),            \
+			MAX20356_DT_ENUM_M(inst, adi_jeita_t1_def_celsius,                         \
+					   MAX20356_THMCFG3_CHGT1THRDEF_MSK) |                     \
+				MAX20356_DT_ENUM_M(inst, adi_jeita_t1_cc1_celsius,                 \
+						   MAX20356_THMCFG3_CHGT1THRCC1_MSK),              \
+			MAX20356_DT_ENUM_V(inst, adi_jeita_t1_def_celsius,                         \
+					   MAX20356_THMCFG3_CHGT1THRDEF_MSK) |                     \
+				MAX20356_DT_ENUM_V(inst, adi_jeita_t1_cc1_celsius,                 \
+						   MAX20356_THMCFG3_CHGT1THRCC1_MSK)),             \
 		MAX20356_INIT_ENTRY(                                                               \
 			MAX20356_REG_THMCFG4,                                                      \
-			MAX20356_DT_ENUM_M(inst, adi_jeita_t2_def_celsius,                        \
-					   MAX20356_THMCFG4_CHGT2THRDEF_MSK) |                   \
-				MAX20356_DT_ENUM_M(inst, adi_jeita_t2_cc1_celsius,                \
-						   MAX20356_THMCFG4_CHGT2THRCC1_MSK),             \
-			MAX20356_DT_ENUM_V(inst, adi_jeita_t2_def_celsius,                        \
-					   MAX20356_THMCFG4_CHGT2THRDEF_MSK) |                   \
-				MAX20356_DT_ENUM_V(inst, adi_jeita_t2_cc1_celsius,                \
-						   MAX20356_THMCFG4_CHGT2THRCC1_MSK)),            \
+			MAX20356_DT_ENUM_M(inst, adi_jeita_t2_def_celsius,                         \
+					   MAX20356_THMCFG4_CHGT2THRDEF_MSK) |                     \
+				MAX20356_DT_ENUM_M(inst, adi_jeita_t2_cc1_celsius,                 \
+						   MAX20356_THMCFG4_CHGT2THRCC1_MSK),              \
+			MAX20356_DT_ENUM_V(inst, adi_jeita_t2_def_celsius,                         \
+					   MAX20356_THMCFG4_CHGT2THRDEF_MSK) |                     \
+				MAX20356_DT_ENUM_V(inst, adi_jeita_t2_cc1_celsius,                 \
+						   MAX20356_THMCFG4_CHGT2THRCC1_MSK)),             \
 		MAX20356_INIT_ENTRY(                                                               \
 			MAX20356_REG_THMCFG5,                                                      \
-			MAX20356_DT_ENUM_M(inst, adi_jeita_t3_def_celsius,                        \
-					   MAX20356_THMCFG5_CHGT3THRDEF_MSK) |                   \
-				MAX20356_DT_ENUM_M(inst, adi_jeita_t3_cc1_celsius,                \
-						   MAX20356_THMCFG5_CHGT3THRCC1_MSK),             \
-			MAX20356_DT_ENUM_V(inst, adi_jeita_t3_def_celsius,                        \
-					   MAX20356_THMCFG5_CHGT3THRDEF_MSK) |                   \
-				MAX20356_DT_ENUM_V(inst, adi_jeita_t3_cc1_celsius,                \
-						   MAX20356_THMCFG5_CHGT3THRCC1_MSK)),            \
+			MAX20356_DT_ENUM_M(inst, adi_jeita_t3_def_celsius,                         \
+					   MAX20356_THMCFG5_CHGT3THRDEF_MSK) |                     \
+				MAX20356_DT_ENUM_M(inst, adi_jeita_t3_cc1_celsius,                 \
+						   MAX20356_THMCFG5_CHGT3THRCC1_MSK),              \
+			MAX20356_DT_ENUM_V(inst, adi_jeita_t3_def_celsius,                         \
+					   MAX20356_THMCFG5_CHGT3THRDEF_MSK) |                     \
+				MAX20356_DT_ENUM_V(inst, adi_jeita_t3_cc1_celsius,                 \
+						   MAX20356_THMCFG5_CHGT3THRCC1_MSK)),             \
 		MAX20356_INIT_ENTRY(                                                               \
 			MAX20356_REG_THMCFG6,                                                      \
-			MAX20356_DT_ENUM_M(inst, adi_jeita_t4_def_celsius,                        \
-					   MAX20356_THMCFG6_CHGT4THRDEF_MSK) |                   \
-				MAX20356_DT_ENUM_M(inst, adi_jeita_t4_cc1_celsius,                \
-						   MAX20356_THMCFG6_CHGT4THRCC1_MSK),             \
-			MAX20356_DT_ENUM_V(inst, adi_jeita_t4_def_celsius,                        \
-					   MAX20356_THMCFG6_CHGT4THRDEF_MSK) |                   \
-				MAX20356_DT_ENUM_V(inst, adi_jeita_t4_cc1_celsius,                \
-						   MAX20356_THMCFG6_CHGT4THRCC1_MSK)),            \
+			MAX20356_DT_ENUM_M(inst, adi_jeita_t4_def_celsius,                         \
+					   MAX20356_THMCFG6_CHGT4THRDEF_MSK) |                     \
+				MAX20356_DT_ENUM_M(inst, adi_jeita_t4_cc1_celsius,                 \
+						   MAX20356_THMCFG6_CHGT4THRCC1_MSK),              \
+			MAX20356_DT_ENUM_V(inst, adi_jeita_t4_def_celsius,                         \
+					   MAX20356_THMCFG6_CHGT4THRDEF_MSK) |                     \
+				MAX20356_DT_ENUM_V(inst, adi_jeita_t4_cc1_celsius,                 \
+						   MAX20356_THMCFG6_CHGT4THRCC1_MSK)),             \
 		MAX20356_INIT_ENTRY(                                                               \
 			MAX20356_REG_THMCFG7,                                                      \
-			MAX20356_DT_ENUM_M(inst, adi_thermal_limit_celsius,                       \
-					   MAX20356_THMCFG7_CHGTHRMLIM_MSK) |                    \
-				MAX20356_DT_ENUM_M(inst, adi_thermistor_pullup_ohms,              \
-						   MAX20356_THMCFG7_THMPUSEL_MSK) |               \
-				MAX20356_DT_ENUM_M(inst, adi_thermistor_monitoring_mode,          \
-						   MAX20356_THMCFG7_THMEN_MSK),                   \
-			MAX20356_DT_ENUM_V(inst, adi_thermal_limit_celsius,                       \
-					   MAX20356_THMCFG7_CHGTHRMLIM_MSK) |                    \
-				MAX20356_DT_ENUM_V(inst, adi_thermistor_pullup_ohms,              \
-						   MAX20356_THMCFG7_THMPUSEL_MSK) |               \
-				MAX20356_DT_ENUM_V(inst, adi_thermistor_monitoring_mode,          \
-						   MAX20356_THMCFG7_THMEN_MSK)),                  \
+			MAX20356_DT_ENUM_M(inst, adi_thermal_limit_celsius,                        \
+					   MAX20356_THMCFG7_CHGTHRMLIM_MSK) |                      \
+				MAX20356_DT_ENUM_M(inst, adi_thermistor_pullup_ohms,               \
+						   MAX20356_THMCFG7_THMPUSEL_MSK) |                \
+				MAX20356_DT_ENUM_M(inst, adi_thermistor_monitoring_mode,           \
+						   MAX20356_THMCFG7_THMEN_MSK),                    \
+			MAX20356_DT_ENUM_V(inst, adi_thermal_limit_celsius,                        \
+					   MAX20356_THMCFG7_CHGTHRMLIM_MSK) |                      \
+				MAX20356_DT_ENUM_V(inst, adi_thermistor_pullup_ohms,               \
+						   MAX20356_THMCFG7_THMPUSEL_MSK) |                \
+				MAX20356_DT_ENUM_V(inst, adi_thermistor_monitoring_mode,           \
+						   MAX20356_THMCFG7_THMEN_MSK)),                   \
 		MAX20356_INIT_ENTRY(MAX20356_REG_CHGCTR1, MAX20356_CHGCTR1_BITS(inst),             \
-				    MAX20356_CHGCTR1_BITS(inst)),                                 \
+				    MAX20356_CHGCTR1_BITS(inst)),                                  \
 		MAX20356_INIT_ENTRY(MAX20356_REG_CHGCTR2, MAX20356_CHGCTR2_BITS(inst),             \
-				    MAX20356_CHGCTR2_BITS(inst)),                                 \
+				    MAX20356_CHGCTR2_BITS(inst)),                                  \
 		MAX20356_INIT_ENTRY(                                                               \
 			MAX20356_REG_HRVBATCFG0,                                                   \
-			MAX20356_DT_ENUM_M(inst, adi_harvester_mode,                              \
-					   MAX20356_HRVBATCFG0_HRVMODCFG_MSK) |                  \
-				MAX20356_DT_ENUM_M(inst, adi_harvester_thermistor_mode,           \
-						   MAX20356_HRVBATCFG0_HRVTHMEN_MSK) |            \
-				MAX20356_DT_BOOL(inst, adi_harvester_thermistor_diode,            \
-						 MAX20356_HRVBATCFG0_HRVTHMDIO_MSK) |             \
-				MAX20356_DT_BOOL(inst, adi_harvester_free_mpc,                    \
-						 MAX20356_HRVBATCFG0_HRVFREEMPC_MSK),             \
-			MAX20356_DT_ENUM_V(inst, adi_harvester_mode,                              \
-					   MAX20356_HRVBATCFG0_HRVMODCFG_MSK) |                  \
-				MAX20356_DT_ENUM_V(inst, adi_harvester_thermistor_mode,           \
-						   MAX20356_HRVBATCFG0_HRVTHMEN_MSK) |            \
-				MAX20356_DT_BOOL(inst, adi_harvester_thermistor_diode,            \
-						 MAX20356_HRVBATCFG0_HRVTHMDIO_MSK) |             \
-				MAX20356_DT_BOOL(inst, adi_harvester_free_mpc,                    \
-						 MAX20356_HRVBATCFG0_HRVFREEMPC_MSK)),            \
+			MAX20356_DT_ENUM_M(inst, adi_harvester_mode,                               \
+					   MAX20356_HRVBATCFG0_HRVMODCFG_MSK) |                    \
+				MAX20356_DT_ENUM_M(inst, adi_harvester_thermistor_mode,            \
+						   MAX20356_HRVBATCFG0_HRVTHMEN_MSK) |             \
+				MAX20356_DT_BOOL(inst, adi_harvester_thermistor_diode,             \
+						 MAX20356_HRVBATCFG0_HRVTHMDIO_MSK) |              \
+				MAX20356_DT_BOOL(inst, adi_harvester_free_mpc,                     \
+						 MAX20356_HRVBATCFG0_HRVFREEMPC_MSK),              \
+			MAX20356_DT_ENUM_V(inst, adi_harvester_mode,                               \
+					   MAX20356_HRVBATCFG0_HRVMODCFG_MSK) |                    \
+				MAX20356_DT_ENUM_V(inst, adi_harvester_thermistor_mode,            \
+						   MAX20356_HRVBATCFG0_HRVTHMEN_MSK) |             \
+				MAX20356_DT_BOOL(inst, adi_harvester_thermistor_diode,             \
+						 MAX20356_HRVBATCFG0_HRVTHMDIO_MSK) |              \
+				MAX20356_DT_BOOL(inst, adi_harvester_free_mpc,                     \
+						 MAX20356_HRVBATCFG0_HRVFREEMPC_MSK)),             \
 	};                                                                                         \
                                                                                                    \
 	static struct charger_max20356_data charger_max20356_data_##inst = {                       \
 		.ichg_ua = DT_INST_PROP_OR(inst, constant_charge_current_microamp, 0),             \
 		.vbatreg_uv = DT_INST_PROP_OR(inst, constant_charge_voltage_microvolt, 0),         \
+		.cc2_ua = DT_INST_PROP_OR(inst, adi_cc2_charge_current_microamp, 0),               \
 	};                                                                                         \
                                                                                                    \
 	static const struct charger_max20356_config charger_max20356_config_##inst = {             \

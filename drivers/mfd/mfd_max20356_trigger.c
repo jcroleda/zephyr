@@ -2,14 +2,6 @@
  * Copyright (c) 2026 Analog Devices, Inc.
  *
  * SPDX-License-Identifier: Apache-2.0
- *
- * MAX20356/MAX20358 INTB trigger support. The INTB pin (open-drain, active-low)
- * is the device's aggregate interrupt output: any enabled Int0-5 source pulls it
- * low. A GPIO callback schedules a work item that reads the Int0-5 registers
- * (clear-on-read), classifies each pending source into an event group via a
- * single lookup table, and invokes the registered per-group callback. IntMask0-5
- * (1 = unmasked) is programmed so only groups with a registered callback assert
- * INTB.
  */
 
 #include <errno.h>
@@ -25,10 +17,6 @@
 
 LOG_MODULE_REGISTER(mfd_max20356_trig, CONFIG_MFD_LOG_LEVEL);
 
-/* Int0-5 (0x07-0x0C) and IntMask0-5 (0x0D-0x12) are each six contiguous
- * registers; reg_index selects both via MAX20356_REG_INT0 / _INTMASK0. IntMask
- * bit positions mirror the Int bit positions, so the INT field masks index both.
- */
 #define MAX20356_INT_REG_COUNT 6U
 
 struct max20356_int_source {
@@ -37,17 +25,11 @@ struct max20356_int_source {
 	enum max20356_event evt;
 };
 
-/* Combined INTB source table: every Int0-5 status bit and the event group that
- * consumes it. Groups gather bits across registers; DVS/PGOOD completion
- * (MAX20356_EVT_DVS_DONE) has no Int0-5 backing and is surfaced from MPCITRSTS
- * by the regulator child, so it does not appear here.
- */
+/* Combined INTB source table: every Int0-5 status bit and the event group that consumes it. */
 static const struct max20356_int_source max20356_int_sources[] = {
-	/* Int0 (0x07) */
 	{0, MAX20356_INT0_CHGSTATINT_MSK, MAX20356_EVT_CHARGER},
 	{0, MAX20356_INT0_CC1TMOINT_MSK, MAX20356_EVT_CHARGER},
 	{0, MAX20356_INT0_THMSTATINT_MSK, MAX20356_EVT_THERMAL},
-	/* Int1 (0x08) */
 	{1, MAX20356_INT1_THMSDINT_MSK, MAX20356_EVT_THERMAL},
 	{1, MAX20356_INT1_CHGJEITAREGINT_MSK, MAX20356_EVT_CHARGER},
 	{1, MAX20356_INT1_CHGJEITASDINT_MSK, MAX20356_EVT_CHARGER},
@@ -56,7 +38,6 @@ static const struct max20356_int_source max20356_int_sources[] = {
 	{1, MAX20356_INT1_ILIMINT_MSK, MAX20356_EVT_MISC},
 	{1, MAX20356_INT1_CHGSYSLIMINT_MSK, MAX20356_EVT_MISC},
 	{1, MAX20356_INT1_SYSBATLIMINT_MSK, MAX20356_EVT_MISC},
-	/* Int2 (0x09) */
 	{2, MAX20356_INT2_THMLDO1INT_MSK, MAX20356_EVT_THERMAL},
 	{2, MAX20356_INT2_UVLOLDO1INT_MSK, MAX20356_EVT_REG_FAULT},
 	{2, MAX20356_INT2_THMLDO2INT_MSK, MAX20356_EVT_THERMAL},
@@ -65,7 +46,6 @@ static const struct max20356_int_source max20356_int_sources[] = {
 	{2, MAX20356_INT2_UVLOLDO3INT_MSK, MAX20356_EVT_REG_FAULT},
 	{2, MAX20356_INT2_SCLDO3INT_MSK, MAX20356_EVT_REG_FAULT},
 	{2, MAX20356_INT2_DRPLDO3INT_MSK, MAX20356_EVT_REG_FAULT},
-	/* Int3 (0x0A) */
 	{3, MAX20356_INT3_THMBK1INT_MSK, MAX20356_EVT_THERMAL},
 	{3, MAX20356_INT3_THMBK2INT_MSK, MAX20356_EVT_THERMAL},
 	{3, MAX20356_INT3_THMBK3INT_MSK, MAX20356_EVT_THERMAL},
@@ -74,21 +54,16 @@ static const struct max20356_int_source max20356_int_sources[] = {
 	{3, MAX20356_INT3_LSW3TMOINT_MSK, MAX20356_EVT_REG_FAULT},
 	{3, MAX20356_INT3_THMLSWINT_MSK, MAX20356_EVT_THERMAL},
 	{3, MAX20356_INT3_BBSTFAULTINT_MSK, MAX20356_EVT_REG_FAULT},
-	/* Int4 (0x0B) */
 	{4, MAX20356_INT4_HRVBATCMPINT_MSK, MAX20356_EVT_MISC},
 	{4, MAX20356_INT4_CHGRESTARTINT_MSK, MAX20356_EVT_CHARGER},
 	{4, MAX20356_INT4_CHGVOLTMODEINT_MSK, MAX20356_EVT_CHARGER},
 	{4, MAX20356_INT4_STEPCHGINT_MSK, MAX20356_EVT_MISC},
 	{4, MAX20356_INT4_BATUVLOBINT_MSK, MAX20356_EVT_MISC},
-	/* Int5 (0x0C) */
 	{5, MAX20356_INT5_I2CTMOINT_MSK, MAX20356_EVT_MISC},
 	{5, MAX20356_INT5_WDTMR_MSK, MAX20356_EVT_WATCHDOG},
 };
 
-/* Set (unmask) or clear (mask) every IntMask bit backing an event group. Each
- * Int source belongs to exactly one group, so masking a group touches only its
- * own bits. Caller holds cb_lock.
- */
+/* Set (unmask) or clear (mask) every IntMask bit backing an event group. */
 static int max20356_set_group_mask(const struct device *dev, enum max20356_event evt, bool unmask)
 {
 	for (size_t i = 0; i < ARRAY_SIZE(max20356_int_sources); i++) {
@@ -109,11 +84,7 @@ static int max20356_set_group_mask(const struct device *dev, enum max20356_event
 	return 0;
 }
 
-/* Bottom half: read the clear-on-read Int0-5 registers, classify each pending
- * source into an event group via the table, dispatch the registered per-group
- * callbacks, and re-arm INTB. Runs in workqueue or own-thread context, never in
- * the ISR.
- */
+/* process each interrupt enabled and call its respective callback function */
 static void max20356_process_int(const struct device *dev)
 {
 	struct mfd_max20356_data *data = dev->data;
@@ -168,9 +139,6 @@ static void max20356_gpio_callback(const struct device *port, struct gpio_callba
 	ARG_UNUSED(port);
 	ARG_UNUSED(pins);
 
-	/* Source decode needs I2C; defer to the bottom half and silence INTB
-	 * until it has been serviced.
-	 */
 	(void)gpio_pin_interrupt_configure_dt(&config->int_gpio, GPIO_INT_DISABLE);
 
 #if defined(CONFIG_MAX20356_TRIGGER_OWN_THREAD)
@@ -213,9 +181,7 @@ int mfd_max20356_add_callback(const struct device *dev, enum max20356_event evt,
 	}
 
 	k_mutex_lock(&data->cb_lock, K_FOREVER);
-	/* The watchdog owns INTB exclusively while armed: any INTB source would
-	 * share Int5 with the feed, so registration is refused until it releases.
-	 */
+	/* refuse registration of new callbacks while watchdog is active */
 	if (data->wdt_active) {
 		k_mutex_unlock(&data->cb_lock);
 		return -EBUSY;
@@ -255,7 +221,7 @@ int mfd_max20356_trigger_init(const struct device *dev)
 {
 	struct mfd_max20356_data *data = dev->data;
 	const struct mfd_max20356_config *config = dev->config;
-	uint8_t scratch;
+	uint8_t scratch = 0;
 	int ret;
 
 	data->dev = dev;
@@ -296,10 +262,7 @@ int mfd_max20356_trigger_init(const struct device *dev)
 		return ret;
 	}
 
-	/* Clear any latched Int0-5 (clear-on-read) so a stale source does not fire
-	 * the moment the GPIO interrupt is armed. All groups start masked
-	 * (IntMask reset 0x00); add_callback() unmasks per subscription.
-	 */
+	/* clear int status of int0-5 while interrupt is not configured */
 	for (uint8_t i = 0; i < MAX20356_INT_REG_COUNT; i++) {
 		(void)mfd_max20356_reg_read(dev, MAX20356_REG_INT0 + i, &scratch);
 	}

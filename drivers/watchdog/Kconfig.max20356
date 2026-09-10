@@ -9,8 +9,6 @@ config WDT_MAX20356
 	depends on MFD_MAX20356_TRIGGER
 	help
 	  Enable the Analog Devices MAX20356/MAX20358 watchdog child driver.
-	  Exposes the Zephyr watchdog API (install_timeout, setup, feed, disable)
-	  on top of the MAX20356 MFD parent.
 
 if WDT_MAX20356
 

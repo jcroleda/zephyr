@@ -19,10 +19,7 @@
 /* Number of multi-purpose control pins (MPC0..MPC7). */
 #define MAX20356_GPIO_PINS 8U
 
-/* Per-pin config register: MPC<n>Cfg at 0x72 + n. All eight share the layout
- * captured by the MPC0Cfg field masks (bit 7 live pin state, bit 4 output value,
- * bit 3 open-drain, bit 2 Hi-Z-bar / output-enable, bit 1 reset, bit 0 pull-up).
- */
+/* Per-pin config register: MPC<n>Cfg at 0x72 + n */
 #define MAX20356_GPIO_REG(pin) (MAX20356_REG_MPC0CFG + (pin))
 
 #define MAX20356_GPIO_PIN_MSK  MAX20356_MPC0CFG_MPC0PIN_MSK
@@ -197,16 +194,16 @@ static int gpio_max20356_init(const struct device *dev)
 	return 0;
 }
 
-#define GPIO_MAX20356_DEFINE(inst)                                                                  \
-	static const struct gpio_max20356_config gpio_max20356_config_##inst = {                    \
-		.common = GPIO_COMMON_CONFIG_FROM_DT_INST(inst),                                    \
-		.mfd = DEVICE_DT_GET(DT_INST_PARENT(inst)),                                         \
+#define GPIO_MAX20356_DEFINE(inst)                                                                 \
+	static const struct gpio_max20356_config gpio_max20356_config_##inst = {                   \
+		.common = GPIO_COMMON_CONFIG_FROM_DT_INST(inst),                                   \
+		.mfd = DEVICE_DT_GET(DT_INST_PARENT(inst)),                                        \
 	};                                                                                         \
                                                                                                    \
-	static struct gpio_max20356_data gpio_max20356_data_##inst;                                 \
+	static struct gpio_max20356_data gpio_max20356_data_##inst;                                \
                                                                                                    \
-	DEVICE_DT_INST_DEFINE(inst, gpio_max20356_init, NULL, &gpio_max20356_data_##inst,           \
-			      &gpio_max20356_config_##inst, POST_KERNEL,                            \
+	DEVICE_DT_INST_DEFINE(inst, gpio_max20356_init, NULL, &gpio_max20356_data_##inst,          \
+			      &gpio_max20356_config_##inst, POST_KERNEL,                           \
 			      CONFIG_GPIO_MAX20356_INIT_PRIORITY, &gpio_max20356_api);
 
 DT_INST_FOREACH_STATUS_OKAY(GPIO_MAX20356_DEFINE)

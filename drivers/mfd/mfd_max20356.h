@@ -1,13 +1,7 @@
 /*
- * Copyright The Zephyr Project Contributors
+ * Copyright (c) 2026 Analog Devices, Inc.
  *
  * SPDX-License-Identifier: Apache-2.0
- *
- * MAX20356/MAX20358 wearable PMIC - register and bitfield definitions.
- * Register addresses are MAX20356_REG_<NAME>; field masks are
- * MAX20356_<REG>_<FIELD>_MSK (BIT()/GENMASK()); use FIELD_GET()/
- * FIELD_PREP() to access. A '*' in a field's access tag marks a bit that
- * resets to its default on a CHGIN rising/falling edge.
  */
 
 #ifndef ZEPHYR_DRIVERS_MFD_MFD_MAX20356_H_
@@ -920,8 +914,6 @@
 #define  MAX20356_LOCKUNLOCK3_PASSWD3_MSK		GENMASK(7, 0)
 #define  MAX20356_LOCKUNLOCK3_TPDIG_ADD_MSK		GENMASK(7, 0)
 #define  MAX20356_LOCKUNLOCK3_TPDIG_DAT_MSK		GENMASK(7, 0)
-
-/* --- Driver-internal definitions (not generated) --- */
 
 #include <zephyr/device.h>
 #include <zephyr/drivers/i2c.h>

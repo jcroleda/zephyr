@@ -8,9 +8,7 @@ config CHARGER_MAX20356
 	depends on MFD_MAX20356
 	help
 	  Enable the Analog Devices MAX20356/MAX20358 battery charger child
-	  driver. Exposes the Zephyr charger API (enable/disable, fast-charge
-	  current, battery regulation voltage, and status/health/online
-	  reporting) on top of the MAX20356 MFD parent.
+	  driver.
 
 if CHARGER_MAX20356
 

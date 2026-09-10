@@ -34,7 +34,7 @@ void mfd_max20356_emul_set_reg(const struct emul *target, uint8_t reg, uint8_t v
 void mfd_max20356_emul_get_reg(const struct emul *target, uint8_t reg, uint8_t *val);
 
 /**
- * @brief Reset the emulator register file to power-on defaults.
+ * @brief Reset the emulator register map to 0s.
  *
  * @param target Emulator instance.
  */

@@ -176,11 +176,7 @@ int mfd_max20356_wdt_feed(const struct device *dev)
 {
 	uint8_t int5;
 
-	/* Reading Int5.WDTmr kicks the timer. Int5 is clear-on-read; its only other
-	 * bit, I2cTmoInt, is cleared as a side effect. That is acceptable because the
-	 * watchdog owns INTB exclusively while armed (mfd_max20356_wdt_claim): no
-	 * consumer is watching I2cTmoInt during that window. See REQ-WDT-004.
-	 */
+	/* read INT5 watchdog bit to reset the timer */
 	return mfd_max20356_reg_read(dev, MAX20356_REG_INT5, &int5);
 }
 
@@ -192,13 +188,8 @@ int mfd_max20356_wdt_claim(const struct device *dev, bool claim)
 
 	k_mutex_lock(&data->cb_lock, K_FOREVER);
 
+	/* refuse access if INTB is occupied by any other interrupt is configured */
 	if (claim) {
-		/* The watchdog needs Int5 to itself. Refuse if any event callback is
-		 * registered: those consumers drive INTB dispatch, which reads Int5
-		 * and would race the feed. I2cTmoInt has no callback group of its own
-		 * beyond MISC, and MISC gathers other sources too, so any live
-		 * callback is treated as a conflict.
-		 */
 		for (uint8_t evt = 0; evt < MAX20356_EVT_MAX; evt++) {
 			if (data->cb[evt] != NULL) {
 				ret = -EBUSY;
@@ -219,11 +210,6 @@ int mfd_max20356_wdt_claim(const struct device *dev, bool claim)
 }
 #endif /* CONFIG_WDT_MAX20356 */
 
-/* Apply the devicetree-configured device-level register block (PwrCfg 0x82,
- * MiscFunctions 0x84). Each entry only touches the fields whose property was
- * present in the node; entries with an empty mask are skipped so the chip's OTP
- * defaults are preserved.
- */
 static int mfd_max20356_init_regs(const struct device *dev)
 {
 	const struct mfd_max20356_config *config = dev->config;
@@ -279,31 +265,29 @@ static int mfd_max20356_init(const struct device *dev)
 	return 0;
 }
 
-/* Device-level init register block (PwrCfg 0x82, MiscFunctions 0x84). A boolean
- * field contributes to its register's mask (so it is written) only when the
- * property is present; otherwise the OTP default is kept.
- */
+/* boolean fields are written only when property is present; otherwise the OTP default is kept. */
 #define MFD_MAX20356_DT_BOOL(inst, prop, msk) (DT_INST_PROP(inst, prop) ? (uint8_t)(msk) : 0U)
 
-#define MFD_MAX20356_PWRCFG_BITS(inst)                                                              \
-	(MFD_MAX20356_DT_BOOL(inst, adi_intb_unmasked_in_shutdown,                                  \
+#define MFD_MAX20356_PWRCFG_BITS(inst)                                                             \
+	(MFD_MAX20356_DT_BOOL(inst, adi_intb_unmasked_in_shutdown,                                 \
 			      MAX20356_PWRCFG_INTBOOTMSK_MSK) |                                    \
 	 MFD_MAX20356_DT_BOOL(inst, adi_stay_on, MAX20356_PWRCFG_STAYON_MSK))
 
 #define MFD_MAX20356_MISCFUNC_BITS(inst)                                                           \
-	(MFD_MAX20356_DT_BOOL(inst, adi_active_discharge_constant,                                  \
-			      MAX20356_MISCFUNCTIONS_DISCHARGECONST_MSK) |                          \
-	 MFD_MAX20356_DT_BOOL(inst, adi_rtc_ldo_off, MAX20356_MISCFUNCTIONS_RTCLDOOFF_MSK) |        \
-	 MFD_MAX20356_DT_BOOL(inst, adi_factory_mode_disabled,                                      \
+	(MFD_MAX20356_DT_BOOL(inst, adi_active_discharge_constant,                                 \
+			      MAX20356_MISCFUNCTIONS_DISCHARGECONST_MSK) |                         \
+	 MFD_MAX20356_DT_BOOL(inst, adi_rtc_ldo_off, MAX20356_MISCFUNCTIONS_RTCLDOOFF_MSK) |       \
+	 MFD_MAX20356_DT_BOOL(inst, adi_factory_mode_disabled,                                     \
 			      MAX20356_MISCFUNCTIONS_FACTORYMODEDIS_MSK))
 
 #define MFD_MAX20356_INIT_ENTRY(regmac, bits) {(regmac), (bits), (bits)}
 
 #define MFD_MAX20356_DEFINE(inst, variant_id)                                                      \
-	static const struct mfd_max20356_init_reg mfd_max20356_init_regs_##variant_id##_##inst[] = {\
+	static const struct mfd_max20356_init_reg mfd_max20356_init_regs_##variant_id##_##inst[] = \
+	{                                                                                          \
 		MFD_MAX20356_INIT_ENTRY(MAX20356_REG_PWRCFG, MFD_MAX20356_PWRCFG_BITS(inst)),      \
 		MFD_MAX20356_INIT_ENTRY(MAX20356_REG_MISCFUNCTIONS,                                \
-					MFD_MAX20356_MISCFUNC_BITS(inst)),                        \
+					MFD_MAX20356_MISCFUNC_BITS(inst)),                         \
 	};                                                                                         \
                                                                                                    \
 	static struct mfd_max20356_data mfd_max20356_data_##variant_id##_##inst;                   \

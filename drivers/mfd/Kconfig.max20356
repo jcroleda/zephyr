@@ -8,10 +8,7 @@ config MFD_MAX20356
 	select I2C
 	help
 	  Enable the Analog Devices MAX20356/MAX20358 wearable PMIC
-	  multi-function device driver. This parent driver provides the shared
-	  I2C register access, variant selection, power-mode/reset commands and
-	  monitor-mux control used by the regulator, charger, GPIO and watchdog
-	  child drivers.
+	  multi-function device driver.
 
 config MFD_MAX20356_TRIGGER
 	bool "MAX20356/MAX20358 INTB trigger support"
@@ -24,8 +21,7 @@ config MFD_MAX20356_TRIGGER
 	  Enable INTB interrupt handling for the MAX20356/MAX20358 PMIC. The
 	  parent installs a GPIO callback on the INTB line, decodes the pending
 	  Int0-5 sources in a workqueue, and dispatches them to consumers that
-	  registered through mfd_max20356_add_callback(). Without this option the
-	  driver operates poll-only and the callback API returns -ENOTSUP.
+	  registered through mfd_max20356_add_callback().
 
 if MFD_MAX20356_TRIGGER
 
@@ -33,9 +29,7 @@ choice MAX20356_TRIGGER_MODE
 	prompt "MAX20356/MAX20358 INTB trigger mode"
 	default MAX20356_TRIGGER_GLOBAL_THREAD
 	help
-	  Select the context in which INTB source decode runs. Decode needs I2C
-	  transactions, so it never runs in the GPIO ISR; the ISR only schedules
-	  the selected bottom half.
+	  Select the context in which INTB source decode runs.
 
 config MAX20356_TRIGGER_GLOBAL_THREAD
 	bool "Use global thread"

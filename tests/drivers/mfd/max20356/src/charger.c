@@ -13,6 +13,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/emul.h>
 #include <zephyr/drivers/charger.h>
+#include <zephyr/drivers/charger/max20356.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/gpio/gpio_emul.h>
 #include <zephyr/drivers/mfd/max20356.h>
@@ -241,6 +242,33 @@ ZTEST_F(max20356_chg, test_set_charge_current_out_of_range)
 	zassert_equal(charger_set_prop(fixture->dev, CHARGER_PROP_CONSTANT_CHARGE_CURRENT_UA, &lo),
 		      -EINVAL);
 	zassert_equal(charger_set_prop(fixture->dev, CHARGER_PROP_CONSTANT_CHARGE_CURRENT_UA, &hi),
+		      -EINVAL);
+}
+
+ZTEST_F(max20356_chg, test_set_get_cc2_current)
+{
+	union charger_propval set = {.custom_uint = 100000};
+	union charger_propval get = {0};
+	uint8_t reg;
+
+	zassert_ok(charger_set_prop(fixture->dev, MAX20356_CHARGER_PROP_CC2_CURRENT_UA, &set));
+
+	/* Shares the CC1 encoding: 100mA -> idx (100000-4000)/2000 = 48. */
+	mfd_max20356_emul_get_reg(fixture->emul, MAX20356_REG_CHGCUR1, &reg);
+	zassert_equal(FIELD_GET(MAX20356_CHGCUR1_CC2IFCHG_MSK, reg), 48, "CC2IFChg = 0x%02x", reg);
+
+	zassert_ok(charger_get_prop(fixture->dev, MAX20356_CHARGER_PROP_CC2_CURRENT_UA, &get));
+	zassert_equal(get.custom_uint, 100000);
+}
+
+ZTEST_F(max20356_chg, test_set_cc2_current_out_of_range)
+{
+	union charger_propval lo = {.custom_uint = 1000};   /* < 4mA */
+	union charger_propval hi = {.custom_uint = 600000}; /* > 500mA */
+
+	zassert_equal(charger_set_prop(fixture->dev, MAX20356_CHARGER_PROP_CC2_CURRENT_UA, &lo),
+		      -EINVAL);
+	zassert_equal(charger_set_prop(fixture->dev, MAX20356_CHARGER_PROP_CC2_CURRENT_UA, &hi),
 		      -EINVAL);
 }
 

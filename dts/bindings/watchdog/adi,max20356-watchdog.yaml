@@ -22,3 +22,15 @@ description: |
 compatible: "adi,max20356-watchdog"
 
 include: base.yaml
+
+properties:
+  adi,lock-enable:
+    type: boolean
+    description: |
+      Password-lock handling for the WDCntl register (guarded by LockMsk3.WDLck).
+      When set the driver wraps every WDCntl write in the LockMsk/LockUnlock
+      password sequence, so a watchdog left in its OTP-locked state stays writable
+      through that sequence. When unset (default) WDCntl is written directly,
+      skipping the password sequence; this requires the register to already be
+      unlocked in hardware (the driver does not issue an unlock), otherwise the
+      writes are dropped by the chip.

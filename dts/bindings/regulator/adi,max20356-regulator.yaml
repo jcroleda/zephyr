@@ -126,10 +126,10 @@ child-binding:
       type: boolean
       description: |
         Password-lock handling for this rail's registers (bucks, buck-boost and
-        LDOs; ignored for the load switches, which have no lock domain). When 1
-        (default) the driver wraps every register write in the LockMsk/LockUnlock
-        password sequence, so a rail left in its OTP-locked state stays writable
-        only through that sequence. Set to 0 to write the rail's registers
+        LDOs; ignored for the load switches, which have no lock domain). When set
+        the driver wraps every register write in the LockMsk/LockUnlock password
+        sequence, so a rail left in its OTP-locked state stays writable through
+        that sequence. When unset (default) the rail's registers are written
         directly, skipping the password sequence; this requires the rail to
         already be unlocked in hardware (the driver does not issue an unlock),
         otherwise the writes are dropped by the chip.

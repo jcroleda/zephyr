@@ -2,17 +2,6 @@
  * Copyright (c) 2026 Analog Devices, Inc.
  *
  * SPDX-License-Identifier: Apache-2.0
- *
- * MAX20356/MAX20358 watchdog child driver. Exposes the standard Zephyr watchdog
- * API on top of the MFD parent's shared I2C register access. The timer interval
- * (WDCntl.WDTmrSel) and reset action (WDCntl.WDRstType) are programmed at setup;
- * the timer is fed by reading Int5.WDTmr through the parent.
- *
- * The feed reads the shared Int5 register (clear-on-read; it also carries
- * I2cTmoInt), so the watchdog must run in isolation: setup() claims INTB
- * exclusively through mfd_max20356_wdt_claim(), which fails if any INTB event
- * consumer (charger, regulator, ...) is registered, and no consumer may register
- * while the watchdog is armed. disable() releases the claim.
  */
 
 #define DT_DRV_COMPAT adi_max20356_watchdog
@@ -38,6 +27,10 @@ static const uint32_t wdt_max20356_intervals_ms[] = {4000U, 8000U, 16000U, 32000
 
 struct wdt_max20356_config {
 	const struct device *mfd;
+	/* DT adi,lock-enable: route WDCntl writes through the password sequence
+	 * (set) or write directly (unset).
+	 */
+	bool lock_enable;
 };
 
 struct wdt_max20356_data {
@@ -46,6 +39,21 @@ struct wdt_max20356_data {
 	bool timeout_valid;
 	bool enabled;
 };
+
+/* Route a WDCntl update through the password sequence when adi,lock-enable is
+ * set, or a plain update when the register is already unlocked in hardware.
+ */
+static int wdt_max20356_reg_update(const struct device *dev, uint8_t mask, uint8_t val)
+{
+	const struct wdt_max20356_config *config = dev->config;
+
+	if (config->lock_enable) {
+		return mfd_max20356_reg_update_locked(config->mfd, MAX20356_LOCK_WD,
+						      MAX20356_REG_WDCNTL, mask, val);
+	}
+
+	return mfd_max20356_reg_update(config->mfd, MAX20356_REG_WDCNTL, mask, val);
+}
 
 static int wdt_max20356_install_timeout(const struct device *dev,
 					const struct wdt_timeout_cfg *timeout)
@@ -128,21 +136,18 @@ static int wdt_max20356_setup(const struct device *dev, uint8_t options)
 	}
 
 	/* Per datasheet, set WDRstType = 0 before changing WDTmrSel, then arm by
-	 * writing the configured WDRstType. Both writes go through the lock helper
-	 * because WDCntl is guarded by LockMsk3.WDLck.
+	 * writing the configured WDRstType.
 	 */
-	ret = mfd_max20356_reg_update_locked(config->mfd, MAX20356_LOCK_WD, MAX20356_REG_WDCNTL,
-					     MAX20356_WDCNTL_WDRSTTYPE_MSK |
-						     MAX20356_WDCNTL_WDTMRSEL_MSK,
-					     FIELD_PREP(MAX20356_WDCNTL_WDTMRSEL_MSK, data->tmrsel));
+	ret = wdt_max20356_reg_update(dev,
+				      MAX20356_WDCNTL_WDRSTTYPE_MSK | MAX20356_WDCNTL_WDTMRSEL_MSK,
+				      FIELD_PREP(MAX20356_WDCNTL_WDTMRSEL_MSK, data->tmrsel));
 	if (ret != 0) {
 		(void)mfd_max20356_wdt_claim(config->mfd, false);
 		return ret;
 	}
 
-	ret = mfd_max20356_reg_update_locked(config->mfd, MAX20356_LOCK_WD, MAX20356_REG_WDCNTL,
-					     MAX20356_WDCNTL_WDRSTTYPE_MSK,
-					     FIELD_PREP(MAX20356_WDCNTL_WDRSTTYPE_MSK, data->rsttype));
+	ret = wdt_max20356_reg_update(dev, MAX20356_WDCNTL_WDRSTTYPE_MSK,
+				      FIELD_PREP(MAX20356_WDCNTL_WDRSTTYPE_MSK, data->rsttype));
 	if (ret != 0) {
 		(void)mfd_max20356_wdt_claim(config->mfd, false);
 		return ret;
@@ -163,10 +168,8 @@ static int wdt_max20356_disable(const struct device *dev)
 		return -EFAULT;
 	}
 
-	ret = mfd_max20356_reg_update_locked(config->mfd, MAX20356_LOCK_WD, MAX20356_REG_WDCNTL,
-					     MAX20356_WDCNTL_WDRSTTYPE_MSK,
-					     FIELD_PREP(MAX20356_WDCNTL_WDRSTTYPE_MSK,
-							MAX20356_WDT_OFF));
+	ret = wdt_max20356_reg_update(dev, MAX20356_WDCNTL_WDRSTTYPE_MSK,
+				      FIELD_PREP(MAX20356_WDCNTL_WDRSTTYPE_MSK, MAX20356_WDT_OFF));
 	if (ret != 0) {
 		return ret;
 	}
@@ -217,6 +220,7 @@ static int wdt_max20356_init(const struct device *dev)
                                                                                                    \
 	static const struct wdt_max20356_config wdt_max20356_config_##inst = {                     \
 		.mfd = DEVICE_DT_GET(DT_INST_PARENT(inst)),                                        \
+		.lock_enable = DT_INST_PROP(inst, adi_lock_enable),                                \
 	};                                                                                         \
                                                                                                    \
 	DEVICE_DT_INST_DEFINE(inst, &wdt_max20356_init, NULL, &wdt_max20356_data_##inst,           \

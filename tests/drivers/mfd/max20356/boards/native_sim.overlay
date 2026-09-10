@@ -151,6 +151,10 @@
 		 */
 		wdog: watchdog {
 			compatible = "adi,max20356-watchdog";
+			/* Route WDCntl writes through the password sequence so the
+			 * locked-domain test exercises the unlock/write/re-lock path.
+			 */
+			adi,lock-enable;
 		};
 	};
 };

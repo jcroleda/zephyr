@@ -106,7 +106,20 @@ static void *reg_setup(void)
 	return &fixture;
 }
 
-ZTEST_SUITE(max20356_reg, NULL, reg_setup, NULL, NULL, NULL);
+static void reg_before(void *f)
+{
+	struct max20356_reg_fixture *fixture = f;
+
+	/* Reset emulator register and lock state so state from a prior test (or
+	 * the preceding lock suite, which leaves a domain engaged) does not leak
+	 * in: buck1 has no adi,lock-enable, so its writes take the direct path
+	 * and are dropped by the emulator while its lock domain is still held.
+	 */
+	mfd_max20356_emul_reset(fixture->emul);
+	spi_dvs_emul_bind(fixture->emul);
+}
+
+ZTEST_SUITE(max20356_reg, NULL, reg_setup, reg_before, NULL, NULL);
 
 /* GPIO-mode set_voltage is rejected: the live preset is chosen by MPC pins. */
 ZTEST_F(max20356_reg, test_gpio_dvs_set_voltage_rejected)
@@ -429,57 +442,4 @@ ZTEST(max20356_reg, test_mpc_enable_map)
 	zassert_equal(boot_snapshot.buck1ctr, 0, "buck1 Ctr written but unrouted");
 	zassert_equal(FIELD_GET(MAX20356_BUCK1ENA_BUCK1EN_MSK, boot_snapshot.buck1ena), 0,
 		      "buck1 En forced but unrouted");
-}
-
-/* adi,lock-enable = <1> (buck1 default): a write to a rail whose lock domain is
- * engaged still lands, because the driver runs the unlock/write/re-lock password
- * sequence around it. The domain is re-locked afterwards.
- */
-ZTEST_F(max20356_reg, test_lock_enable_uses_password_path)
-{
-	uint8_t vset, unlock;
-
-	mfd_max20356_emul_set_locked(fixture->emul, MAX20356_LOCKMSK1_BK1LCK_MSK, true);
-
-	zassert_ok(regulator_set_voltage(fixture->buck1, 1000000, 1000000));
-
-	mfd_max20356_emul_get_reg(fixture->emul, MAX20356_REG_BUCK1VSET, &vset);
-	zassert_equal(FIELD_GET(MAX20356_BUCK1VSET_BUCK1VSET_MSK, vset), 20,
-		      "buck1 VSet not written through the password path: 0x%02x", vset);
-
-	/* The sequence ends by re-locking (last LockUnlock1 write is 0xAA). */
-	mfd_max20356_emul_get_reg(fixture->emul, MAX20356_REG_LOCKUNLOCK1, &unlock);
-	zassert_equal(unlock, 0xAA, "buck1 domain not re-locked: 0x%02x", unlock);
-
-	mfd_max20356_emul_set_locked(fixture->emul, MAX20356_LOCKMSK1_BK1LCK_MSK, false);
-}
-
-/* adi,lock-enable = <0> (ldo1): the driver writes directly, without the password
- * sequence. When the rail's lock domain is engaged the write is dropped by the
- * hardware; when the domain is clear the write lands. Either way the driver never
- * touches LockUnlock1.
- */
-ZTEST_F(max20356_reg, test_lock_disable_uses_direct_path)
-{
-	uint8_t vset, unlock;
-
-	/* Domain engaged: a direct write is dropped, and LockUnlock1 is untouched. */
-	mfd_max20356_emul_set_locked(fixture->emul, MAX20356_LOCKMSK1_LD1LCK_MSK, true);
-	mfd_max20356_emul_set_reg(fixture->emul, MAX20356_REG_LOCKUNLOCK1, 0x00);
-
-	zassert_ok(regulator_set_voltage(fixture->ldo1, 1300000, 1300000));
-
-	mfd_max20356_emul_get_reg(fixture->emul, MAX20356_REG_LDO1VSET, &vset);
-	zassert_equal(vset, 0x00, "locked ldo1 accepted a direct write: 0x%02x", vset);
-	mfd_max20356_emul_get_reg(fixture->emul, MAX20356_REG_LOCKUNLOCK1, &unlock);
-	zassert_equal(unlock, 0x00, "direct path issued a password write: 0x%02x", unlock);
-
-	/* Domain clear: the same direct write lands. */
-	mfd_max20356_emul_set_locked(fixture->emul, MAX20356_LOCKMSK1_LD1LCK_MSK, false);
-
-	zassert_ok(regulator_set_voltage(fixture->ldo1, 1300000, 1300000));
-
-	mfd_max20356_emul_get_reg(fixture->emul, MAX20356_REG_LDO1VSET, &vset);
-	zassert_equal(FIELD_GET(MAX20356_LDO1VSET_LDO1VSET_MSK, vset), 4,
-		      "unlocked ldo1 direct write did not land: 0x%02x", vset);
 }
