@@ -1,0 +1,22 @@
+sample:
+  name: MAX20356 PMIC Watchdog Charger-Reset Sample
+  description: Configure the MAX20356 charger, arm the watchdog for the charger/limiter
+    reset action, and confirm the charger registers reset when the timer expires
+common:
+  tags:
+    - watchdog
+    - mfd
+    - charger
+  harness: console
+  harness_config:
+    type: multi_line
+    regex:
+      - "MAX20356 watchdog charger-reset test"
+      - "watchdog armed"
+      - "WDT charger-reset test"
+tests:
+  sample.drivers.mfd_max20356_wdog:
+    filter: dt_nodelabel_enabled("pmic") and dt_nodelabel_enabled("wdt")
+      and dt_nodelabel_enabled("charger")
+    platform_allow:
+      - nucleo_u575zi_q

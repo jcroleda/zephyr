@@ -1,0 +1,25 @@
+sample:
+  name: MAX20356 PMIC Validation Sample
+  description: Exercise every MAX20356 rail's I2C write operations plus charger and
+    fuel gauge monitoring
+common:
+  tags:
+    - charger
+    - sensor
+    - regulator
+    - mfd
+  harness: console
+  harness_config:
+    type: multi_line
+    regex:
+      - "MAX20356 regulator validation"
+      - "Regulator validation PASSED"
+      - "MAX20356 INTB self-test"
+      - "Constant charge current"
+      - "Fuel gauge SoC"
+tests:
+  sample.drivers.mfd_max20356:
+    filter: dt_nodelabel_enabled("charger") and dt_nodelabel_enabled("fuelgauge") and
+            dt_nodelabel_enabled("reg_buck1") and dt_nodelabel_enabled("reg_ldo1")
+    platform_allow:
+      - nucleo_u575zi_q

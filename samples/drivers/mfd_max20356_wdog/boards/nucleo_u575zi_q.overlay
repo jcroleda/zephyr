@@ -1,0 +1,303 @@
+/*
+ * Copyright (c) 2026 Analog Devices Inc
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Hardware configuration spec for the MAX20356 PMIC validation sample. Every
+ * rail of the part is instantiated and a broad subset of the device-, charger-
+ * and regulator-level init options is exercised so a probe can confirm the I2C
+ * writes reached the chip.
+ *
+ * DVS: buck1/buck3 use I2C DVS (Mode 0) so their setpoint is software-driven and
+ * probe-able; buck2 uses GPIO DVS (Mode 1) with an MPC pin pair selecting one of
+ * four presets. SPI DVS (Mode 2) is intentionally not used here as it needs
+ * MPC0/1/2 wired to an SPI controller.
+ *
+ * Each lockable rail (bucks, buck-boost, LDOs) sets adi,lock-enable so the
+ * driver wraps register writes in the password sequence; this guarantees the
+ * writes land even if the rail powered up OTP-locked, so a return of 0 from the
+ * regulator API means the register actually changed.
+ */
+
+#include <zephyr/dt-bindings/i2c/i2c.h>
+#include <zephyr/dt-bindings/mfd/max20356.h>
+
+/* SPI DVS (Mode 2) target for buck3. On hardware the controller's CS/SCLK/DIN
+ * must be wired to the PMIC's MPC0/MPC1/MPC2 pins. CONFIG_SPI must be set so the
+ * SPI controller driver is built; otherwise SPI_DT_SPEC_GET references an
+ * undefined controller device struct and the link fails.
+ */
+&spi1 {
+	status = "okay";
+
+	dvs_spi_dev: dvs-spi-dev@0 {
+		compatible = "vnd,spi-device";
+		reg = <0>;
+		spi-max-frequency = <1000000>;
+	};
+};
+
+dev: &i2c1 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+
+	fuelgauge: max17262@36 {
+		compatible = "maxim,max17262";
+		reg = <0x36>;
+		design-voltage = <3600>;
+		desired-voltage = <3600>;
+		desired-charging-current = <2000>;
+		design-cap = <17000>;
+		empty-voltage = <3300>;
+		recovery-voltage = <3880>;
+		charge-voltage = <3600>;
+		status = "okay";
+	};
+
+	pmic: max20356@28 {
+		compatible = "adi,max20356";
+		reg = <0x28>;
+		status = "okay";
+		int-gpios = <&gpiof 13 GPIO_ACTIVE_LOW>;
+
+		/* The watchdog is fed by reading Int5, so the charger/limiter reset
+		 * this sample demonstrates only fires while nothing reads Int5. That
+		 * holds here: the WDTmr interrupt is masked on INTB by default
+		 * (IntMask5.WDTmrM resets to 0) and the sample registers no INTB
+		 * callbacks, so no source asserts INTB and the parent never reads
+		 * Int5 on its own. int-gpios is kept because MFD_MAX20356_TRIGGER
+		 * (and therefore the WDT_MAX20356 driver) depends on it.
+		 */
+
+		/* SPI DVS (Mode 2) controller, wired to MPC0/MPC1/MPC2; shared by
+		 * any buck child selecting adi,dvs-mode = "spi" (here buck3).
+		 */
+		spi-dvs = <&dvs_spi_dev>;
+
+		/* MPC-routed interrupt watch lines (buck1-PGOOD / USBOK). */
+		adi,buck1-pgood-int-gpios = <&gpiof 15 GPIO_ACTIVE_LOW>;
+		adi,usbok-int-gpios = <&gpiof 16 GPIO_ACTIVE_LOW>;
+
+		/* Device-level init: PwrCfg and MiscFunctions bits. */
+		adi,intb-unmasked-in-shutdown;
+		adi,active-discharge-constant;
+		adi,rtc-ldo-off;
+		adi,factory-mode-disabled;
+		adi,ivmon-high-impedance;
+
+		/* Input-limiter / SYS-regulation init block. */
+		adi,input-current-limit-milliamp = <300>;
+		adi,input-current-limit-max-milliamp = <450>;
+		adi,input-current-limit-blanking-microsec = <1000>;
+		adi,sys-discharge-in-recovery;
+		adi,sys-min-voltage-microvolt = <3600000>;
+		adi,sys-uvlo-threshold-microvolt = <3000000>;
+
+		/* Boot / reset init block. */
+		adi,power-reset-config = <5>;
+		adi,soft-reset-keeps-registers;
+		adi,boot-delay-milliseconds = <220>;
+		adi,sys-uvlo-auto-retry;
+
+		wdt: watchdog {
+			compatible = "adi,max20356-watchdog";
+
+			/* adi,lock-enable is intentionally omitted: the sample
+			 * overrides WDCntl.WDRstType to the charger/limiter-only
+			 * action with mfd_max20356_wdt_set_rsttype(), which writes
+			 * WDCntl directly (no password sequence). Leaving the node
+			 * unlocked keeps the arm and the override consistent.
+			 */
+		};
+
+		gpio_mpc: gpio {
+			compatible = "adi,max20356-gpio";
+			gpio-controller;
+			#gpio-cells = <2>;
+			/* MPC3/MPC5 (buck2 GPIO DVS) and MPC6/MPC7 (rail enable
+			 * routing) are consumed below, so expose only MPC0,1,2,4
+			 * as GPIOs here is not possible per-pin; ngpios covers the
+			 * controller and the driver rejects double-claimed pins.
+			 */
+			ngpios = <8>;
+		};
+
+		charger: charger {
+			compatible = "adi,max20356-charger";
+
+			/* Core CC/CV setpoints (standard charger API). */
+			constant-charge-current-microamp = <100000>;
+			constant-charge-voltage-microvolt = <4200000>;
+
+			/* CC zones and control bits. */
+			adi,cc1-enable;
+			adi,cc2-charge-current-microamp = <200000>;
+			adi,charge-autostop;
+			adi,charge-auto-restart;
+			adi,cc1-timer-limit;
+
+			/* Recharge / precharge / done thresholds. */
+			adi,recharge-threshold-microvolt = <100000>;
+			adi,precharge-voltage-microvolt = <3000000>;
+			adi,precharge-current-percent = <10>;
+			adi,charge-done-current-percent = <10>;
+
+			/* Safety timers. */
+			adi,maintain-charge-timer-minutes = <30>;
+			adi,precharge-timer-minutes = <60>;
+			adi,cc1-fastcharge-timer-minutes = <120>;
+			adi,safety-timer-minutes = <300>;
+
+			/* Step charge. */
+			adi,step-charge-hysteresis-microvolt = <300000>;
+			adi,step-charge-rise-microvolt = <4000000>;
+
+			/* JEITA thermal zones. */
+			adi,cool-cc1-current-percent = <50>;
+			adi,cool-batreg-offset-microvolt = <100000>;
+			adi,cool-cc2-current-percent = <50>;
+			adi,room-cc1-current-percent = <100>;
+			adi,room-batreg-offset-microvolt = <0>;
+			adi,room-cc2-current-percent = <100>;
+			adi,warm-cc1-current-percent = <50>;
+			adi,warm-batreg-offset-microvolt = <100000>;
+			adi,warm-cc2-current-percent = <50>;
+			adi,jeita-t1-cc1-celsius = <0>;
+			adi,jeita-t2-cc1-celsius = <10>;
+			adi,jeita-t3-cc1-celsius = <45>;
+			adi,jeita-t4-cc1-celsius = <45>;
+			adi,thermal-limit-celsius = <100>;
+			adi,thermistor-pullup-ohms = <10000>;
+			adi,thermistor-monitoring-mode = <3>;
+		};
+
+		regulators {
+			compatible = "adi,max20356-regulator";
+
+			/* MPC enable routing: MPC6 -> LSW2, MPC7 -> LSW3. These
+			 * two rails are therefore enable-controlled by hardware
+			 * (and sit in sequencing slot 7); the sample does not
+			 * software-toggle them. Pins 0..2 are free, 3/5 are the
+			 * buck2 GPIO DVS pair, 4 is free.
+			 */
+			adi,mpc-enable-rails =
+				<MAX20356_MPC_NONE MAX20356_MPC_NONE MAX20356_MPC_NONE
+				 MAX20356_MPC_NONE MAX20356_MPC_NONE MAX20356_MPC_NONE
+				 MAX20356_MPC_LSW2 MAX20356_MPC_LSW3>;
+
+			reg_buck1: buck1 {
+				/* 10mV step -> 0.5-1.13V range. */
+				adi,buck-voltage-step-microvolt = <10000>;
+				regulator-min-microvolt = <500000>;
+				regulator-max-microvolt = <1130000>;
+				regulator-boot-on;
+				adi,lock-enable;
+				adi,sequence-slot = <1>;
+				adi,buck-low-emi;
+				adi,buck-forced-pwm;
+				adi,buck-pgood-enable;
+				adi,buck-passive-discharge;
+				regulator-active-discharge = <1>;
+			};
+
+			reg_buck2: buck2 {
+				/* 25mV step -> 0.5-2.075V range, GPIO DVS. */
+				adi,buck-voltage-step-microvolt = <25000>;
+				adi,dvs-mode = "gpio";
+				adi,dvs-mpc-pair = <3 5>;
+				adi,dvs-voltages =
+					<1000000 1100000 1200000 1300000>;
+				adi,dvs-valley-current-microamp = <1000000>;
+				regulator-min-microvolt = <500000>;
+				regulator-max-microvolt = <2075000>;
+				adi,lock-enable;
+				adi,buck-dvs-ipmax;
+				adi,buck-low-bandwidth;
+				adi,buck-force-dcm;
+			};
+
+			reg_buck3: buck3 {
+				/* 25mV step -> 0.5-2.075V range, SPI DVS (Mode 2).
+				 * The setpoint is clocked to the buck as a
+				 * command byte over the parent's spi-dvs
+				 * controller, whose CS/SCLK/DIN must be wired to
+				 * MPC0/MPC1/MPC2.
+				 */
+				adi,buck-voltage-step-microvolt = <25000>;
+				adi,dvs-mode = "spi";
+				regulator-min-microvolt = <500000>;
+				regulator-max-microvolt = <2075000>;
+				adi,lock-enable;
+				adi,buck-fast;
+			};
+
+			reg_bbst: buckboost {
+				regulator-min-microvolt = <2500000>;
+				regulator-max-microvolt = <5500000>;
+				adi,lock-enable;
+				adi,bbst-low-emi;
+				adi,bbst-fast;
+				adi,bbst-ramp-enable;
+				adi,bbst-passive-discharge;
+				adi,bbst-fhigh-threshold-kilohertz = <50>;
+				regulator-active-discharge = <1>;
+			};
+
+			reg_ldo1: ldo1 {
+				/* 0.9-4.0V, linear-regulator mode. */
+				regulator-min-microvolt = <900000>;
+				regulator-max-microvolt = <4000000>;
+				regulator-initial-mode = <MAX20356_MODE_LDO>;
+				regulator-allowed-modes =
+					<MAX20356_MODE_LDO MAX20356_MODE_LOAD_SWITCH>;
+				adi,lock-enable;
+				adi,ldo1-passive-discharge;
+			};
+
+			reg_ldo2: ldo2 {
+				/* 0.9-4.0V, load-switch mode selectable at runtime. */
+				regulator-min-microvolt = <900000>;
+				regulator-max-microvolt = <4000000>;
+				regulator-initial-mode = <MAX20356_MODE_LOAD_SWITCH>;
+				regulator-allowed-modes =
+					<MAX20356_MODE_LDO MAX20356_MODE_LOAD_SWITCH>;
+				adi,lock-enable;
+				adi,ldo2-passive-discharge;
+			};
+
+			reg_ldo3: ldo3 {
+				/* 0.9-4.075V, 25mV step. */
+				regulator-min-microvolt = <900000>;
+				regulator-max-microvolt = <4075000>;
+				adi,lock-enable;
+				adi,sequence-slot = <5>;
+				adi,ldo3-no-clip-protection;
+				adi,ldo3-passive-discharge;
+			};
+
+			reg_ldo4: ldo4 {
+				/* RTC LDO: fixed voltage set. */
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <1850000>;
+				adi,lock-enable;
+				adi,ldo4-passive-discharge;
+			};
+
+			reg_lsw1: lsw1 {
+				/* Load switch, software-enabled, non-lockable. */
+				adi,lsw-low-iq;
+				adi,lsw-passive-discharge;
+			};
+
+			reg_lsw2: lsw2 {
+				/* Enable routed to MPC6; slot 7 required. */
+				adi,sequence-slot = <7>;
+			};
+
+			reg_lsw3: lsw3 {
+				/* Enable routed to MPC7; slot 7 required. */
+				adi,sequence-slot = <7>;
+			};
+		};
+	};
+};
