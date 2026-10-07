@@ -1,0 +1,43 @@
+/*
+ * Copyright (c) 2026 Analog Devices Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <zephyr/dt-bindings/dac/ad524x.h>
+
+&i2c0 {
+	status = "okay";
+
+	ad5243_2k5: ad5243@2c {
+		compatible = "adi,ad5243";
+		reg = <0x2c>;
+		#io-channel-cells = <1>;
+		max-resistance = <AD524X_RESISTANCE_2K5>;
+		status = "okay";
+	};
+
+	ad5243_10k: ad5243@2d {
+		compatible = "adi,ad5243";
+		reg = <0x2d>;
+		#io-channel-cells = <1>;
+		max-resistance = <AD524X_RESISTANCE_10K>;
+		status = "okay";
+	};
+
+	ad5243_50k: ad5243@2e {
+		compatible = "adi,ad5243";
+		reg = <0x2e>;
+		#io-channel-cells = <1>;
+		max-resistance = <AD524X_RESISTANCE_50K>;
+		status = "okay";
+	};
+
+	ad5243_100k: ad5243@2f {
+		compatible = "adi,ad5243";
+		reg = <0x2f>;
+		#io-channel-cells = <1>;
+		max-resistance = <AD524X_RESISTANCE_100K>;
+		status = "okay";
+	};
+};
