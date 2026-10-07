@@ -10,6 +10,7 @@ zephyr_library_sources_ifdef(CONFIG_USERSPACE dac_handlers.c)
 zephyr_library_include_directories_ifdef(CONFIG_DAC_INFINEON_HPPASS_CSG ${ZEPHYR_BASE}/drivers/mfd)
 
 # zephyr-keep-sorted-start
+zephyr_library_sources_ifdef(CONFIG_DAC_AD524X dac_ad524x.c)
 zephyr_library_sources_ifdef(CONFIG_DAC_AD5529R dac_ad5529r.c)
 zephyr_library_sources_ifdef(CONFIG_DAC_AD559X dac_ad559x.c)
 zephyr_library_sources_ifdef(CONFIG_DAC_AD569X dac_ad569x.c)

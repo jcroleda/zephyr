@@ -1,0 +1,23 @@
+# AD5243/AD5248 Digital Potentiometer configuration options
+
+# Copyright (c) 2026 Analog Devices Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+config DAC_AD524X
+	bool "Analog Devices AD5243/AD5248 DAC driver"
+	default y
+	select I2C
+	depends on DT_HAS_ADI_AD5243_ENABLED \
+		|| DT_HAS_ADI_AD5248_ENABLED
+	help
+	  Enable the driver for the Analog Devices AD5243/AD5248 Digital Potentiometer.
+
+if DAC_AD524X
+
+config DAC_AD524X_INIT_PRIORITY
+	int "Init priority"
+	default 80
+	help
+	  Analog Devices AD5243/AD5248 DAC device driver initialization priority.
+
+endif # DAC_AD524X

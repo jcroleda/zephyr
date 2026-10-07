@@ -1,0 +1,55 @@
+# Copyright (c) 2026 Analog Devices Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+# Common fields for the AD524x family of dual-channel, 256-position I2C digital
+# potentiometers (AD5243, AD5248).
+
+include: [dac-controller.yaml, i2c-device.yaml]
+
+properties:
+  "#io-channel-cells":
+    const: 1
+
+  max-resistance:
+    type: int
+    required: true
+    enum:
+      - 2500
+      - 10000
+      - 50000
+      - 100000
+    default: 10000
+    description: |
+      End-to-end (R_AB) nominal resistance of the device variant, in ohms.
+      Select the value matching the ordered part number. The
+      AD524X_RESISTANCE_* macros in
+      <zephyr/dt-bindings/dac/ad524x.h> provide named constants:
+      - 2500   (2.5 kOhm) / AD524X_RESISTANCE_2K5
+      - 10000  (10 kOhm)  / AD524X_RESISTANCE_10K
+      - 50000  (50 kOhm)  / AD524X_RESISTANCE_50K
+      - 100000 (100 kOhm) / AD524X_RESISTANCE_100K
+
+      The default setting is 10kOhm.
+
+  channel-1-initial-resistance:
+    type: int
+    default: 320
+    description: |
+      Initial wiper-to-terminal-B resistance of channel 1, in ohms, applied
+      during channel setup. The minimum is the fixed wiper resistance
+      (320 ohms); the maximum is the device end-to-end resistance.
+
+      The default setting is 320Ohms.
+
+  channel-2-initial-resistance:
+    type: int
+    default: 320
+    description: |
+      Initial wiper-to-terminal-B resistance of channel 2, in ohms, applied
+      during channel setup. The minimum is the fixed wiper resistance
+      (320 ohms); the maximum is the device end-to-end resistance.
+
+      The default setting is 320Ohms.
+
+io-channel-cells:
+  - output
