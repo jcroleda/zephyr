@@ -107,11 +107,46 @@ static int max20356_set_group_mask(const struct device *dev, enum max20356_event
 	return 0;
 }
 
+static void max20356_handle_interrupt(const struct device *dev)
+{
+	struct mfd_max20356_data *data = dev->data;
+	const struct mfd_max20356_config *config = dev->config;
+
+	(void)gpio_pin_interrupt_configure_dt(&config->int_gpio, GPIO_INT_DISABLE);
+
+#if defined(CONFIG_MAX20356_TRIGGER_OWN_THREAD)
+	k_sem_give(&data->sem);
+#else
+	k_work_submit(&data->work);
+#endif
+}
+
+static int max20356_intb_arm(const struct device *dev)
+{
+	const struct mfd_max20356_config *config = dev->config;
+	int ret;
+
+	ret = gpio_pin_interrupt_configure_dt(&config->int_gpio, GPIO_INT_EDGE_TO_ACTIVE);
+	if (ret < 0) {
+		return ret;
+	}
+
+	ret = gpio_pin_get_dt(&config->int_gpio);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (ret > 0) {
+		max20356_handle_interrupt(dev);
+	}
+
+	return 0;
+}
+
 /* process each interrupt enabled and call its respective callback function */
 static void max20356_process_int(const struct device *dev)
 {
 	struct mfd_max20356_data *data = dev->data;
-	const struct mfd_max20356_config *config = dev->config;
 	uint8_t status[MAX20356_INT_REG_COUNT] = {0};
 	uint16_t fired = 0;
 	uint8_t first = 0;
@@ -145,7 +180,7 @@ static void max20356_process_int(const struct device *dev)
 	}
 
 rearm:
-	ret = gpio_pin_interrupt_configure_dt(&config->int_gpio, GPIO_INT_EDGE_TO_ACTIVE);
+	ret = max20356_intb_arm(dev);
 	if (ret < 0) {
 		LOG_ERR("Failed to re-arm INTB: %d", ret);
 	}
@@ -155,18 +190,11 @@ static void max20356_gpio_callback(const struct device *port, struct gpio_callba
 				   gpio_port_pins_t pins)
 {
 	struct mfd_max20356_data *data = CONTAINER_OF(cb, struct mfd_max20356_data, gpio_cb);
-	const struct mfd_max20356_config *config = data->dev->config;
 
 	ARG_UNUSED(port);
 	ARG_UNUSED(pins);
 
-	(void)gpio_pin_interrupt_configure_dt(&config->int_gpio, GPIO_INT_DISABLE);
-
-#if defined(CONFIG_MAX20356_TRIGGER_OWN_THREAD)
-	k_sem_give(&data->sem);
-#else
-	k_work_submit(&data->work);
-#endif
+	max20356_handle_interrupt(data->dev);
 }
 
 #if defined(CONFIG_MAX20356_TRIGGER_OWN_THREAD)
@@ -381,7 +409,7 @@ int mfd_max20356_trigger_init(const struct device *dev)
 		(void)mfd_max20356_reg_read(dev, MAX20356_REG_INT0 + i, &scratch);
 	}
 
-	ret = gpio_pin_interrupt_configure_dt(&config->int_gpio, GPIO_INT_EDGE_TO_ACTIVE);
+	ret = max20356_intb_arm(dev);
 	if (ret < 0) {
 		LOG_ERR("Failed to arm INTB: %d", ret);
 		return ret;
